@@ -5,8 +5,8 @@ import pytest
 from conftest import rooted_float
 
 import conftest as noise
-from src.graph import LatentNode
-from src.visual import plot_posterior
+from noisyvalue.graph import LatentNode
+from noisyvalue.visual import plot_posterior
 
 
 matplotlib.use("Agg")

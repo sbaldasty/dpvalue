@@ -1,5 +1,5 @@
 import sympy as sp
-import util
+from . import util
 from sympy import sympify
 
 from .core import (

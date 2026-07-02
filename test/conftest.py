@@ -1,7 +1,7 @@
 import sympy as sp
 
-from src.core import NoisyFloat
-from src.graph import DerivedNode, NormalNode, BinomialNode, DiscreteGaussianNode
+from noisyvalue.core import NoisyFloat
+from noisyvalue.graph import DerivedNode, NormalNode, BinomialNode, DiscreteGaussianNode
 from sympy import Basic, sympify
 
 
@@ -25,7 +25,7 @@ def _to_expr(value):
     if isinstance(value, (int, float)):
         return value
 
-    from src.core import NoisyFloat, NoisyInt
+    from noisyvalue.core import NoisyFloat, NoisyInt
 
     if isinstance(value, (NoisyFloat, NoisyInt)):
         return value.expr

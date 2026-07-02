@@ -4,9 +4,9 @@ import sympy as sp
 
 from sympy.stats import quantile
 
-from src.core import _filter_theta_equations
-from src.core import _solve_theta_substitutions
-from src.graph import NoiseNode
+from .core import _filter_theta_equations
+from .core import _solve_theta_substitutions
+from .graph import NoiseNode
 
 
 def _weighted_quantile(values, weights, q):

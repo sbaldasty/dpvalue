@@ -1,7 +1,7 @@
 import operator as op
 import sympy as sp
 import numpy as np
-import util
+from . import util
 
 from sympy import Abs, And, Eq, Equality, Not, Or, Piecewise, Pow, Rational
 from sympy import sympify

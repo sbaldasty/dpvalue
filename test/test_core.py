@@ -6,16 +6,16 @@ import sympy as sp
 from numpy.random import default_rng
 from conftest import rooted_float
 from conftest import from_node
-from src.core import NoisyFloat
-from src.core import NoisyInt
-from src.core import noisy_value_sampler
-from src.core import sample_noisy_values
-from src.graph import DerivedNode
-from src.graph import LatentNode
-from src.graph import Node
-from src.graph import NormalNode
-from src.graph import NoiseNode
-from src.graph import DiscreteGaussianNode
+from noisyvalue.core import NoisyFloat
+from noisyvalue.core import NoisyInt
+from noisyvalue.core import noisy_value_sampler
+from noisyvalue.core import sample_noisy_values
+from noisyvalue.graph import DerivedNode
+from noisyvalue.graph import LatentNode
+from noisyvalue.graph import Node
+from noisyvalue.graph import NormalNode
+from noisyvalue.graph import NoiseNode
+from noisyvalue.graph import DiscreteGaussianNode
 
 
 _rng_factory = lambda: default_rng(42)

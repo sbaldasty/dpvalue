@@ -3,11 +3,11 @@ import numpy as np
 import pytest
 
 import conftest as noise
-from src.core import (
+from noisyvalue.core import (
     NoisyBool, NoisyFloat, NoisyInt,
     noisy_value_sampler, sample_noisy_values,
 )
-from src.io import load, save
+from noisyvalue.io import load, save
 
 
 def _roundtrip(tmp_path, container):
