@@ -150,7 +150,7 @@ def test_saved_file_is_valid_json_with_expected_keys(tmp_path):
     assert doc["version"] == 3
     assert "nodes" in doc
     assert "container" in doc
-    assert doc["container"]["kind"] == "value"
+    assert doc["container"]["kind"] == "ValueContainer"
 
 
 def test_load_rejects_unknown_version(tmp_path):
@@ -240,6 +240,6 @@ def test_table_kind_spot_check(tmp_path):
     p = tmp_path / "table.json"
     save(p, df)
     doc = json.loads(p.read_text())
-    assert doc["container"]["kind"] == "table"
-    assert doc["container"]["columns"]["label"]["kind"] == "plain"
-    assert doc["container"]["columns"]["value"]["kind"] == "noisyfloat"
+    assert doc["container"]["kind"] == "TableContainer"
+    assert doc["container"]["columns"]["label"]["kind"] == "PlainColumnContainer"
+    assert doc["container"]["columns"]["value"]["kind"] == "FloatColumnContainer"

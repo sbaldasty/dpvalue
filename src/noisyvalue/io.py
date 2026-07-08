@@ -65,8 +65,6 @@ def _node_to_dict(node):
 
 
 class Unit:
-    tag = None
-
     @classmethod
     def matches(cls, obj):
         raise NotImplementedError
@@ -93,8 +91,6 @@ class Container(Unit):
 
 
 class PlainColumnContainer(Container):
-    tag = "plain"
-
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.Series) and type(obj.array) not in _NOISY_COLUMN_CLASSES.values()
@@ -109,7 +105,7 @@ class PlainColumnContainer(Container):
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.tag, "dtype": str(obj.dtype), "values": obj.tolist()}
+        return {"kind": cls.__name__, "dtype": str(obj.dtype), "values": obj.tolist()}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -142,7 +138,7 @@ class NoisyColumnContainer(Container):
             else {"obs": arr[i]._obs, "root": _node_name(arr[i]._root)}
             for i in range(len(arr))
         ]
-        return {"kind": cls.tag, "elements": elements}
+        return {"kind": cls.__name__, "elements": elements}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -155,22 +151,19 @@ class NoisyColumnContainer(Container):
 
 
 class FloatColumnContainer(NoisyColumnContainer):
-    tag = "noisyfloat"
     array_cls = NoisyFloatArray
 
 
 class IntColumnContainer(NoisyColumnContainer):
-    tag = "noisyint"
     array_cls = NoisyIntArray
 
 
 class BoolColumnContainer(NoisyColumnContainer):
-    tag = "noisybool"
     array_cls = NoisyBoolArray
 
 
 _COLUMN_KINDS = [FloatColumnContainer, IntColumnContainer, BoolColumnContainer, PlainColumnContainer]
-_COLUMN_KIND_BY_TAG = {k.tag: k for k in _COLUMN_KINDS}
+_COLUMN_KIND_BY_TAG = {k.__name__: k for k in _COLUMN_KINDS}
 
 
 def _column_kind_for(series):
@@ -181,8 +174,6 @@ def _column_kind_for(series):
 
 
 class ValueContainer(Container):
-    tag = "value"
-
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, NoisyValue)
@@ -198,7 +189,7 @@ class ValueContainer(Container):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.tag,
+            "kind": cls.__name__,
             "type": _TYPE_NAMES[type(obj)],
             "obs": obj._obs,
             "root": _node_name(obj._root),
@@ -210,8 +201,6 @@ class ValueContainer(Container):
 
 
 class ArrayContainer(Container):
-    tag = "array"
-
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, np.ndarray)
@@ -230,7 +219,7 @@ class ArrayContainer(Container):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.tag,
+            "kind": cls.__name__,
             "shape": list(obj.shape),
             "elements": [
                 {"type": _TYPE_NAMES[type(v)], "obs": v._obs, "root": _node_name(v._root)}
@@ -247,8 +236,6 @@ class ArrayContainer(Container):
 
 
 class TableContainer(Container):
-    tag = "table"
-
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.DataFrame)
@@ -270,7 +257,7 @@ class TableContainer(Container):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.tag,
+            "kind": cls.__name__,
             "columns": {
                 col: _column_kind_for(obj[col]).to_dict(obj[col]) for col in obj.columns
             },
@@ -292,8 +279,6 @@ class TupleContainer(Container):
     ever one level deep, matching save()'s documented contract — so nested
     lists/tuples are rejected rather than accepted silently.
     """
-
-    tag = "tuple"
 
     @classmethod
     def matches(cls, obj):
@@ -321,7 +306,7 @@ class TupleContainer(Container):
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.tag, "items": [cls._item_kind(item).to_dict(item) for item in obj]}
+        return {"kind": cls.__name__, "items": [cls._item_kind(item).to_dict(item) for item in obj]}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -331,7 +316,7 @@ class TupleContainer(Container):
 
 
 _KINDS = [ValueContainer, ArrayContainer, TableContainer, TupleContainer]
-_KIND_BY_TAG = {k.tag: k for k in _KINDS}
+_KIND_BY_TAG = {k.__name__: k for k in _KINDS}
 
 
 def _kind_for(obj):
