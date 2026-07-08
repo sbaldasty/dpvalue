@@ -285,19 +285,19 @@ class TableContainer(Container):
         return pd.DataFrame(columns)
 
 
-class SequenceContainer(Container):
-    """Shared logic for top-level list/tuple containers.
+class TupleContainer(Container):
+    """Shared logic for top-level tuple containers.
 
-    Items must be a NoisyValue, ndarray, or DataFrame — a list/tuple is only
+    Items must be a NoisyValue, ndarray, or DataFrame — a tuple is only
     ever one level deep, matching save()'s documented contract — so nested
     lists/tuples are rejected rather than accepted silently.
     """
 
-    container_type = None
+    tag = "tuple"
 
     @classmethod
     def matches(cls, obj):
-        return isinstance(obj, cls.container_type)
+        return isinstance(obj, tuple)
 
     @classmethod
     def _item_kind(cls, item):
@@ -317,7 +317,7 @@ class SequenceContainer(Container):
 
     @classmethod
     def rebuild(cls, obj, it):
-        return cls.container_type(cls._item_kind(item).rebuild(item, it) for item in obj)
+        return tuple(cls._item_kind(item).rebuild(item, it) for item in obj)
 
     @classmethod
     def to_dict(cls, obj):
@@ -325,22 +325,12 @@ class SequenceContainer(Container):
 
     @classmethod
     def from_dict(cls, d, built):
-        return cls.container_type(
+        return tuple(
             _KIND_BY_TAG[item["kind"]].from_dict(item, built) for item in d["items"]
         )
 
 
-class ListContainer(SequenceContainer):
-    tag = "list"
-    container_type = list
-
-
-class TupleContainer(SequenceContainer):
-    tag = "tuple"
-    container_type = tuple
-
-
-_KINDS = [ValueContainer, ArrayContainer, TableContainer, ListContainer, TupleContainer]
+_KINDS = [ValueContainer, ArrayContainer, TableContainer, TupleContainer]
 _KIND_BY_TAG = {k.tag: k for k in _KINDS}
 
 

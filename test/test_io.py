@@ -79,7 +79,7 @@ def test_discrete_gaussian_noise_source_survives_roundtrip(tmp_path):
 def test_shared_latent_dependency_survives_roundtrip(tmp_path):
     a = NoisyFloat.draw(5.0, noise.gaussian(0, 1), rng=1)
     b = a * 2.0
-    rt_a, rt_b = _roundtrip(tmp_path, [a, b])
+    rt_a, rt_b = _roundtrip(tmp_path, (a, b))
     draws_a, draws_b = sample_noisy_values(rt_a, rt_b, n=500, rng=2)
     assert np.allclose(draws_b.draws, 2.0 * draws_a.draws)
 
@@ -122,8 +122,8 @@ def test_2d_array_shape_survives_roundtrip(tmp_path):
 def test_list_of_mixed_items_survives_roundtrip(tmp_path):
     v = NoisyFloat.draw(1.0, noise.gaussian(0, 1), rng=0)
     arr = np.array([NoisyInt.lift(i) for i in range(3)])
-    rt = _roundtrip(tmp_path, [v, arr])
-    assert isinstance(rt, list)
+    rt = _roundtrip(tmp_path, (v, arr))
+    assert isinstance(rt, tuple)
     assert len(rt) == 2
     rt_v, rt_arr = rt
     assert isinstance(rt_v, NoisyFloat)
@@ -214,18 +214,18 @@ def test_table_column_shares_latent_with_top_level_value(tmp_path):
     b = a * 2.0  # shares a's latent/noise node
     df = pd.DataFrame({"value": pd.Series(NoisyFloatArray._from_sequence([b]))})
 
-    rt_a, rt_df = _roundtrip(tmp_path, [a, df])
+    rt_a, rt_df = _roundtrip(tmp_path, (a, df))
     rt_b = rt_df["value"].array[0]
 
     draws_b, draws_a = sample_noisy_values(rt_b, rt_a, n=500, rng=2)
     assert np.allclose(draws_b.draws, 2.0 * draws_a.draws)
 
 
-def test_table_nested_in_list_alongside_other_containers(tmp_path):
+def test_table_nested_in_tuple_alongside_other_containers(tmp_path):
     v = NoisyFloat.draw(1.0, noise.gaussian(0, 1), rng=0)
     df = pd.DataFrame({"value": pd.Series(NoisyFloatArray._from_sequence([NoisyFloat.lift(9.0)]))})
-    rt = _roundtrip(tmp_path, [v, df])
-    assert isinstance(rt, list)
+    rt = _roundtrip(tmp_path, (v, df))
+    assert isinstance(rt, tuple)
     rt_v, rt_df = rt
     assert isinstance(rt_v, NoisyFloat)
     assert isinstance(rt_df, pd.DataFrame)
