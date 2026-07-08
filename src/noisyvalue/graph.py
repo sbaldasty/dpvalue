@@ -1,12 +1,19 @@
 import numpy as np
-from . import util
 
+from . import util
+from itertools import count
 from sympy import Symbol
 from sympy import sympify
 from sympy.stats import Normal
 from sympy.stats.frv_types import BinomialDistribution, rv
 
-from .util import fresh_name
+
+class Name:
+    counter = count()
+
+    @classmethod
+    def fresh(cls):
+        return f"id_{next(cls.counter)}"
 
 
 class Parameter:
@@ -27,7 +34,7 @@ class Parameter:
 
 class Node:
     def __init__(self, deps=()):
-        self.expr = Symbol(fresh_name())
+        self.expr = Symbol(Name.fresh())
         self.deps = util.as_tuple(deps, Node)
 
     def closure(self):
@@ -132,7 +139,7 @@ class NormalNode(NoiseNode):
     scale = Parameter(1)
 
     def sympy_rv(self):
-        return Normal(fresh_name(), self.loc, self.scale)
+        return Normal(Name.fresh(), self.loc, self.scale)
 
     def sample(self, rng, size=None, resolved=()):
         loc = float(self.loc.subs(resolved))
@@ -156,7 +163,7 @@ class BinomialNode(NoiseNode):
     prob = Parameter(1)
 
     def sympy_rv(self):
-        return rv(fresh_name(), BinomialDistribution, self.trials, self.prob, check=False)
+        return rv(Name.fresh(), BinomialDistribution, self.trials, self.prob, check=False)
 
     def sample(self, rng, size=None, resolved=()):
         try:
@@ -186,7 +193,7 @@ class DiscreteGaussianNode(NoiseNode):
 
     def sympy_rv(self):
         # Continuous Normal as quantile-space approximation for visualization.
-        return Normal(fresh_name(), self.loc, self.scale)
+        return Normal(Name.fresh(), self.loc, self.scale)
 
     def sample(self, rng, size=None, resolved=()):
         loc = float(self.loc.subs(resolved))
