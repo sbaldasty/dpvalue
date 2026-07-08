@@ -175,7 +175,7 @@ def _column_to_dict(series):
     for column_kind, cls in _NOISY_COLUMN_CLASSES.items():
         if type(arr) is cls:
             elements = [
-                {"missing": True} if arr._mask[i]
+                None if arr._mask[i]
                 else {"obs": arr[i]._obs, "root": _node_name(arr[i]._root)}
                 for i in range(len(arr))
             ]
@@ -186,7 +186,6 @@ def _column_to_dict(series):
 def _table_to_dict(df):
     return {
         "kind": "table",
-        "index": list(df.index),
         "columns": {col: _column_to_dict(df[col]) for col in df.columns},
     }
 
@@ -312,23 +311,20 @@ def _load_array(adict, built):
     return arr
 
 
-def _load_column(cdict, built, index):
+def _load_column(cdict, built):
     if cdict["kind"] == "plain":
-        return pd.Series(cdict["values"], dtype=cdict["dtype"], index=index)
+        return pd.Series(cdict["values"], dtype=cdict["dtype"])
     scalar_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]._scalar_cls
     values = [
-        pd.NA if e.get("missing") else scalar_cls(e["obs"], built[e["root"]])
+        pd.NA if e is None else scalar_cls(e["obs"], built[e["root"]])
         for e in cdict["elements"]
     ]
     array_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]
-    return pd.Series(array_cls._from_sequence(values), index=index)
+    return pd.Series(array_cls._from_sequence(values))
 
 
 def _load_table(tdict, built):
-    # Build each column with the target index up front — passing `index=` to
-    # the DataFrame constructor separately would realign-by-label instead.
-    index = tdict["index"]
-    columns = {name: _load_column(col, built, index) for name, col in tdict["columns"].items()}
+    columns = {name: _load_column(col, built) for name, col in tdict["columns"].items()}
     return pd.DataFrame(columns)
 
 

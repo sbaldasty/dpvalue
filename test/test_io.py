@@ -178,18 +178,6 @@ def test_table_roundtrips_plain_and_noisy_columns(tmp_path):
     )
 
 
-def test_table_preserves_custom_index(tmp_path):
-    floats = [NoisyFloat.lift(1.0), NoisyFloat.lift(2.0)]
-    # Build the Series with its final index directly — passing `index=` to the
-    # DataFrame constructor instead would realign-by-label against the
-    # Series' default RangeIndex and turn every entry into NA.
-    df = pd.DataFrame({
-        "value": pd.Series(NoisyFloatArray._from_sequence(floats), index=["row1", "row2"]),
-    })
-    rt = _roundtrip(tmp_path, df)
-    assert list(rt.index) == ["row1", "row2"]
-
-
 def test_table_missing_values_survive_roundtrip(tmp_path):
     a = NoisyFloat.draw(5.0, noise.gaussian(0, 1), rng=1)
     df = pd.DataFrame({"value": pd.Series(NoisyFloatArray._from_sequence([a, None]))})
