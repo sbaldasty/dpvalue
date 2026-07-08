@@ -12,14 +12,6 @@ from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 _VERSION = 3
 
-_TYPE_CLASSES = {
-    "NoisyFloat": NoisyFloat,
-    "NoisyInt": NoisyInt,
-    "NoisyBool": NoisyBool,
-}
-
-_TYPE_NAMES = {v: k for k, v in _TYPE_CLASSES.items()}
-
 _NOISY_COLUMN_CLASSES = {
     "noisyfloat": NoisyFloatArray,
     "noisyint": NoisyIntArray,
@@ -97,7 +89,11 @@ class Container(Unit):
         raise NotImplementedError
 
 
-class PlainColumnContainer(Container):
+class ColumnContainer(Container):
+    pass
+
+
+class PlainColumnContainer(ColumnContainer):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.Series) and type(obj.array) not in _NOISY_COLUMN_CLASSES.values()
@@ -119,7 +115,7 @@ class PlainColumnContainer(Container):
         return pd.Series(d["values"], dtype=d["dtype"])
 
 
-class NoisyColumnContainer(Container):
+class NoisyColumnContainer(ColumnContainer):
     array_cls = None
 
     @classmethod
@@ -167,17 +163,6 @@ class IntColumnContainer(NoisyColumnContainer):
 
 class BoolColumnContainer(NoisyColumnContainer):
     array_cls = NoisyBoolArray
-
-
-_COLUMN_KINDS = [FloatColumnContainer, IntColumnContainer, BoolColumnContainer, PlainColumnContainer]
-_COLUMN_KIND_BY_TAG = {k.__name__: k for k in _COLUMN_KINDS}
-
-
-def _column_kind_for(series):
-    for kind in _COLUMN_KINDS:
-        if kind.matches(series):
-            return kind
-    raise TypeError(f"Unsupported column dtype: {series.dtype}")
 
 
 class ValueContainer(Container):
@@ -258,13 +243,13 @@ class TableContainer(Container):
     def children(cls, obj):
         flat = []
         for col in obj.columns:
-            flat.extend(_column_kind_for(obj[col]).children(obj[col]))
+            flat.extend(_kind_for(obj[col]).children(obj[col]))
         return flat
 
     @classmethod
     def rebuild(cls, obj, it):
         columns = {
-            col: _column_kind_for(obj[col]).rebuild(obj[col], it) for col in obj.columns
+            col: _kind_for(obj[col]).rebuild(obj[col], it) for col in obj.columns
         }
         return pd.DataFrame(columns, index=obj.index)
 
@@ -273,14 +258,14 @@ class TableContainer(Container):
         return {
             "kind": cls.__name__,
             "columns": {
-                col: _column_kind_for(obj[col]).to_dict(obj[col]) for col in obj.columns
+                col: _kind_for(obj[col]).to_dict(obj[col]) for col in obj.columns
             },
         }
 
     @classmethod
     def from_dict(cls, d, built):
         columns = {
-            name: _COLUMN_KIND_BY_TAG[col["kind"]].from_dict(col, built)
+            name: deserialize(col, built, accept=ColumnContainer)
             for name, col in d["columns"].items()
         }
         return pd.DataFrame(columns)
@@ -329,7 +314,8 @@ class TupleContainer(Container):
         )
 
 
-_KINDS = [FloatContainer, IntContainer, BoolContainer, ArrayContainer, TableContainer, TupleContainer]
+_KINDS = [FloatContainer, IntContainer, BoolContainer, ArrayContainer, TableContainer, TupleContainer,
+          FloatColumnContainer, IntColumnContainer, BoolColumnContainer, PlainColumnContainer]
 _KIND_BY_TAG = {k.__name__: k for k in _KINDS}
 
 
