@@ -33,60 +33,6 @@ _NOISY_COLUMN_CLASSES = {
 _SP_NAMESPACE = vars(sp)
 
 
-# ── serialization ──────────────────────────────────────────────────────────────
-
-def _flatten_container(container):
-    flat = []
-
-    def _walk(item):
-        if isinstance(item, NoisyValue):
-            flat.append(item)
-        elif isinstance(item, np.ndarray):
-            for v in item.flat:
-                flat.append(v)
-        elif isinstance(item, pd.DataFrame):
-            for col in item.columns:
-                arr = item[col].array
-                if type(arr) in _NOISY_COLUMN_CLASSES.values():
-                    for i in range(len(arr)):
-                        if not arr._mask[i]:
-                            flat.append(arr[i])
-        elif isinstance(item, (list, tuple)):
-            for sub in item:
-                _walk(sub)
-
-    _walk(container)
-    return flat
-
-
-def _rebuild_table(df, it):
-    columns = {}
-    for col in df.columns:
-        arr = df[col].array
-        if type(arr) not in _NOISY_COLUMN_CLASSES.values():
-            columns[col] = df[col]
-            continue
-        values = [pd.NA if arr._mask[i] else next(it) for i in range(len(arr))]
-        columns[col] = pd.Series(type(arr)._from_sequence(values), index=df.index)
-    return pd.DataFrame(columns, index=df.index)
-
-
-def _rebuild_container(container, it):
-    if isinstance(container, NoisyValue):
-        return next(it)
-    if isinstance(container, np.ndarray):
-        arr = np.empty(container.shape, dtype=object)
-        for i in range(arr.size):
-            arr.flat[i] = next(it)
-        return arr
-    if isinstance(container, pd.DataFrame):
-        return _rebuild_table(container, it)
-    if isinstance(container, (list, tuple)):
-        rebuilt = [_rebuild_container(sub, it) for sub in container]
-        return tuple(rebuilt) if isinstance(container, tuple) else rebuilt
-    raise TypeError(f"Unsupported container type: {type(container)}")
-
-
 def _node_name(node):
     """Return a serialization name for a node that is stable within a save() call."""
     if isinstance(node, DerivedNode):
@@ -94,35 +40,7 @@ def _node_name(node):
     return str(node.expr)
 
 
-def _collect_nodes(container):
-    nodes = {}
-
-    def visit_value(v):
-        for node in v._root.closure():
-            name = _node_name(node)
-            if name not in nodes:
-                nodes[name] = node
-
-    def visit(item):
-        if isinstance(item, NoisyValue):
-            visit_value(item)
-        elif isinstance(item, np.ndarray):
-            for v in item.flat:
-                visit_value(v)
-        elif isinstance(item, pd.DataFrame):
-            for col in item.columns:
-                arr = item[col].array
-                if type(arr) in _NOISY_COLUMN_CLASSES.values():
-                    for i in range(len(arr)):
-                        if not arr._mask[i]:
-                            visit_value(arr[i])
-        elif isinstance(item, (list, tuple)):
-            for sub in item:
-                visit(sub)
-
-    visit(container)
-    return nodes
-
+# ── node serialization ──────────────────────────────────────────────────────────
 
 def _noise_node_params_to_dict(node):
     t = type(node).type_name
@@ -150,25 +68,12 @@ def _node_to_dict(node):
     raise TypeError(f"Unknown Node type: {type(node)}")
 
 
-def _value_to_dict(v):
-    return {
-        "kind": "value",
-        "type": _TYPE_NAMES[type(v)],
-        "obs": v._obs,
-        "root": _node_name(v._root),
-    }
-
-
-def _array_to_dict(arr):
-    return {
-        "kind": "array",
-        "shape": list(arr.shape),
-        "elements": [
-            {"type": _TYPE_NAMES[type(v)], "obs": v._obs, "root": _node_name(v._root)}
-            for v in arr.flat
-        ],
-    }
-
+# ── DataFrame column helpers (table-internal; not a top-level Kind) ────────────
+#
+# A table's columns aren't uniform the way an array's elements are: some
+# columns are noisy (masked per-row, one scalar type per column) and some are
+# plain pandas dtypes passed through as-is. That heterogeneity is contained
+# here rather than leaking into the Kind interface below.
 
 def _column_to_dict(series):
     arr = series.array
@@ -183,54 +88,256 @@ def _column_to_dict(series):
     return {"kind": "plain", "dtype": str(series.dtype), "values": series.tolist()}
 
 
-def _table_to_dict(df):
-    return {
-        "kind": "table",
-        "columns": {col: _column_to_dict(df[col]) for col in df.columns},
-    }
+def _load_column(cdict, built):
+    if cdict["kind"] == "plain":
+        return pd.Series(cdict["values"], dtype=cdict["dtype"])
+    scalar_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]._scalar_cls
+    values = [
+        pd.NA if e is None else scalar_cls(e["obs"], built[e["root"]])
+        for e in cdict["elements"]
+    ]
+    array_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]
+    return pd.Series(array_cls._from_sequence(values))
 
 
-def _container_to_dict(container):
-    if isinstance(container, NoisyValue):
-        return _value_to_dict(container)
-    if isinstance(container, np.ndarray):
-        return _array_to_dict(container)
-    if isinstance(container, pd.DataFrame):
-        return _table_to_dict(container)
-    if isinstance(container, (list, tuple)):
-        kind = "tuple" if isinstance(container, tuple) else "list"
-        items = []
-        for item in container:
-            if isinstance(item, NoisyValue):
-                items.append(_value_to_dict(item))
-            elif isinstance(item, np.ndarray):
-                items.append(_array_to_dict(item))
-            elif isinstance(item, pd.DataFrame):
-                items.append(_table_to_dict(item))
-            else:
-                raise TypeError(
-                    f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
-                )
-        return {"kind": kind, "items": items}
-    raise TypeError(f"Unsupported container type: {type(container)}")
+# ── Kind: one class per top-level container shape ──────────────────────────────
+#
+# Each Kind knows how to find the NoisyValue leaves inside a container
+# (children), swap them out for freshly consolidated ones (rebuild), and
+# convert to/from the JSON-able dict form (to_dict/from_dict). save()/load()
+# just dispatch to the matching Kind instead of repeating an isinstance chain
+# at every step.
+
+class Kind:
+    tag = None
+
+    @classmethod
+    def matches(cls, obj):
+        raise NotImplementedError
+
+    @classmethod
+    def children(cls, obj):
+        """NoisyValue leaves contained in obj, in the order rebuild()/to_dict() expect."""
+        raise NotImplementedError
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        """An equivalent container with each leaf NoisyValue replaced by next(it)."""
+        raise NotImplementedError
+
+    @classmethod
+    def to_dict(cls, obj):
+        raise NotImplementedError
+
+    @classmethod
+    def from_dict(cls, d, built):
+        raise NotImplementedError
+
+
+class ValueKind(Kind):
+    tag = "value"
+
+    @classmethod
+    def matches(cls, obj):
+        return isinstance(obj, NoisyValue)
+
+    @classmethod
+    def children(cls, obj):
+        return [obj]
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        return next(it)
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {
+            "kind": cls.tag,
+            "type": _TYPE_NAMES[type(obj)],
+            "obs": obj._obs,
+            "root": _node_name(obj._root),
+        }
+
+    @classmethod
+    def from_dict(cls, d, built):
+        return _TYPE_CLASSES[d["type"]](d["obs"], built[d["root"]])
+
+
+class ArrayKind(Kind):
+    tag = "array"
+
+    @classmethod
+    def matches(cls, obj):
+        return isinstance(obj, np.ndarray)
+
+    @classmethod
+    def children(cls, obj):
+        return list(obj.flat)
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        arr = np.empty(obj.shape, dtype=object)
+        for i in range(arr.size):
+            arr.flat[i] = next(it)
+        return arr
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {
+            "kind": cls.tag,
+            "shape": list(obj.shape),
+            "elements": [
+                {"type": _TYPE_NAMES[type(v)], "obs": v._obs, "root": _node_name(v._root)}
+                for v in obj.flat
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, d, built):
+        arr = np.empty(tuple(d["shape"]), dtype=object)
+        for i, edict in enumerate(d["elements"]):
+            arr.flat[i] = ValueKind.from_dict(edict, built)
+        return arr
+
+
+class TableKind(Kind):
+    tag = "table"
+
+    @classmethod
+    def matches(cls, obj):
+        return isinstance(obj, pd.DataFrame)
+
+    @classmethod
+    def children(cls, obj):
+        flat = []
+        for col in obj.columns:
+            arr = obj[col].array
+            if type(arr) in _NOISY_COLUMN_CLASSES.values():
+                for i in range(len(arr)):
+                    if not arr._mask[i]:
+                        flat.append(arr[i])
+        return flat
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        columns = {}
+        for col in obj.columns:
+            arr = obj[col].array
+            if type(arr) not in _NOISY_COLUMN_CLASSES.values():
+                columns[col] = obj[col]
+                continue
+            values = [pd.NA if arr._mask[i] else next(it) for i in range(len(arr))]
+            columns[col] = pd.Series(type(arr)._from_sequence(values), index=obj.index)
+        return pd.DataFrame(columns, index=obj.index)
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {
+            "kind": cls.tag,
+            "columns": {col: _column_to_dict(obj[col]) for col in obj.columns},
+        }
+
+    @classmethod
+    def from_dict(cls, d, built):
+        columns = {name: _load_column(col, built) for name, col in d["columns"].items()}
+        return pd.DataFrame(columns)
+
+
+class SequenceKind(Kind):
+    """Shared logic for top-level list/tuple containers.
+
+    Items must be a NoisyValue, ndarray, or DataFrame — a list/tuple is only
+    ever one level deep, matching save()'s documented contract — so nested
+    lists/tuples are rejected rather than accepted silently.
+    """
+
+    container_type = None
+
+    @classmethod
+    def matches(cls, obj):
+        return isinstance(obj, cls.container_type)
+
+    @classmethod
+    def _item_kind(cls, item):
+        item_kind = _kind_for(item)
+        if item_kind not in (ValueKind, ArrayKind, TableKind):
+            raise TypeError(
+                f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
+            )
+        return item_kind
+
+    @classmethod
+    def children(cls, obj):
+        flat = []
+        for item in obj:
+            flat.extend(cls._item_kind(item).children(item))
+        return flat
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        return cls.container_type(cls._item_kind(item).rebuild(item, it) for item in obj)
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"kind": cls.tag, "items": [cls._item_kind(item).to_dict(item) for item in obj]}
+
+    @classmethod
+    def from_dict(cls, d, built):
+        return cls.container_type(
+            _KIND_BY_TAG[item["kind"]].from_dict(item, built) for item in d["items"]
+        )
+
+
+class ListKind(SequenceKind):
+    tag = "list"
+    container_type = list
+
+
+class TupleKind(SequenceKind):
+    tag = "tuple"
+    container_type = tuple
+
+
+_KINDS = [ValueKind, ArrayKind, TableKind, ListKind, TupleKind]
+_KIND_BY_TAG = {k.tag: k for k in _KINDS}
+
+
+def _kind_for(obj):
+    for kind in _KINDS:
+        if kind.matches(obj):
+            return kind
+    return None
+
+
+def _collect_nodes(kind, container):
+    nodes = {}
+    for v in kind.children(container):
+        for node in v._root.closure():
+            name = _node_name(node)
+            if name not in nodes:
+                nodes[name] = node
+    return nodes
 
 
 def save(path, container):
     """Save a NoisyValue, ndarray of NoisyValues, or list/tuple of either to a JSON file."""
-    flat = _flatten_container(container)
+    kind = _kind_for(container)
+    if kind is None:
+        raise TypeError(f"Unsupported container type: {type(container)}")
+    flat = kind.children(container)
     consolidated = consolidate(*flat)
-    container = _rebuild_container(container, iter(consolidated))
-    nodes = _collect_nodes(container)
+    container = kind.rebuild(container, iter(consolidated))
+    nodes = _collect_nodes(kind, container)
     doc = {
         "version": _VERSION,
         "nodes": {name: _node_to_dict(node) for name, node in nodes.items()},
-        "container": _container_to_dict(container),
+        "container": kind.to_dict(container),
     }
     with open(path, "w") as f:
         json.dump(doc, f, indent=2)
 
 
-# ── deserialization ────────────────────────────────────────────────────────────
+# ── node deserialization ────────────────────────────────────────────────────────
 
 def _topo_sort(nodes_dict):
     visited = set()
@@ -298,51 +405,6 @@ def _load_nodes(nodes_dict):
     return built
 
 
-def _load_element(edict, built):
-    cls = _TYPE_CLASSES[edict["type"]]
-    return cls(edict["obs"], built[edict["root"]])
-
-
-def _load_array(adict, built):
-    shape = tuple(adict["shape"])
-    arr = np.empty(shape, dtype=object)
-    for i, edict in enumerate(adict["elements"]):
-        arr.flat[i] = _load_element(edict, built)
-    return arr
-
-
-def _load_column(cdict, built):
-    if cdict["kind"] == "plain":
-        return pd.Series(cdict["values"], dtype=cdict["dtype"])
-    scalar_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]._scalar_cls
-    values = [
-        pd.NA if e is None else scalar_cls(e["obs"], built[e["root"]])
-        for e in cdict["elements"]
-    ]
-    array_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]
-    return pd.Series(array_cls._from_sequence(values))
-
-
-def _load_table(tdict, built):
-    columns = {name: _load_column(col, built) for name, col in tdict["columns"].items()}
-    return pd.DataFrame(columns)
-
-
-def _load_container(cdict, built):
-    kind = cdict["kind"]
-    if kind == "value":
-        return _load_element(cdict, built)
-    if kind == "array":
-        return _load_array(cdict, built)
-    if kind == "table":
-        return _load_table(cdict, built)
-    if kind in ("list", "tuple"):
-        loaders = {"value": _load_element, "array": _load_array, "table": _load_table}
-        items = [loaders[item["kind"]](item, built) for item in cdict["items"]]
-        return tuple(items) if kind == "tuple" else items
-    raise ValueError(f"Unknown container kind: {kind!r}")
-
-
 def load(path):
     """Load a container saved by save()."""
     with open(path) as f:
@@ -350,4 +412,8 @@ def load(path):
     if doc.get("version") != _VERSION:
         raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
     built = _load_nodes(doc["nodes"])
-    return _load_container(doc["container"], built)
+    cdict = doc["container"]
+    kind = _KIND_BY_TAG.get(cdict.get("kind"))
+    if kind is None:
+        raise ValueError(f"Unknown container kind: {cdict.get('kind')!r}")
+    return kind.from_dict(cdict, built)
