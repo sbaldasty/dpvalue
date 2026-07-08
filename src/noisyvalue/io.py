@@ -6,12 +6,8 @@ import pandas as pd
 import sympy as sp
 
 from .consolidate import consolidate
-from .core import (
-    NoisyValue, NoisyFloat, NoisyInt, NoisyBool,
-)
-from .graph import DerivedNode
-from .graph import LatentNode
-from .graph import NoiseNode
+from .core import NoisyValue, NoisyFloat, NoisyInt, NoisyBool
+from .graph import DerivedNode, LatentNode, NoiseNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 _VERSION = 3
@@ -68,61 +64,11 @@ def _node_to_dict(node):
     raise TypeError(f"Unknown Node type: {type(node)}")
 
 
-# ── DataFrame column helpers (table-internal; not a top-level Kind) ────────────
-#
-# A table's columns aren't uniform the way an array's elements are: some
-# columns are noisy (masked per-row, one scalar type per column) and some are
-# plain pandas dtypes passed through as-is. That heterogeneity is contained
-# here rather than leaking into the Kind interface below.
-
-def _column_to_dict(series):
-    arr = series.array
-    for column_kind, cls in _NOISY_COLUMN_CLASSES.items():
-        if type(arr) is cls:
-            elements = [
-                None if arr._mask[i]
-                else {"obs": arr[i]._obs, "root": _node_name(arr[i]._root)}
-                for i in range(len(arr))
-            ]
-            return {"kind": column_kind, "elements": elements}
-    return {"kind": "plain", "dtype": str(series.dtype), "values": series.tolist()}
-
-
-def _load_column(cdict, built):
-    if cdict["kind"] == "plain":
-        return pd.Series(cdict["values"], dtype=cdict["dtype"])
-    scalar_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]._scalar_cls
-    values = [
-        pd.NA if e is None else scalar_cls(e["obs"], built[e["root"]])
-        for e in cdict["elements"]
-    ]
-    array_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]
-    return pd.Series(array_cls._from_sequence(values))
-
-
-# ── Kind: one class per top-level container shape ──────────────────────────────
-#
-# Each Kind knows how to find the NoisyValue leaves inside a container
-# (children), swap them out for freshly consolidated ones (rebuild), and
-# convert to/from the JSON-able dict form (to_dict/from_dict). save()/load()
-# just dispatch to the matching Kind instead of repeating an isinstance chain
-# at every step.
-
-class Kind:
+class Unit:
     tag = None
 
     @classmethod
     def matches(cls, obj):
-        raise NotImplementedError
-
-    @classmethod
-    def children(cls, obj):
-        """NoisyValue leaves contained in obj, in the order rebuild()/to_dict() expect."""
-        raise NotImplementedError
-
-    @classmethod
-    def rebuild(cls, obj, it):
-        """An equivalent container with each leaf NoisyValue replaced by next(it)."""
         raise NotImplementedError
 
     @classmethod
@@ -134,7 +80,128 @@ class Kind:
         raise NotImplementedError
 
 
-class ValueKind(Kind):
+# ── Container: one class per top-level container shape ─────────────────────────
+#
+# Each Container knows how to find the NoisyValue leaves inside a container
+# (children), swap them out for freshly consolidated ones (rebuild), and
+# convert to/from the JSON-able dict form (to_dict/from_dict). save()/load()
+# just dispatch to the matching Container instead of repeating an isinstance
+# chain at every step.
+
+class Container(Unit):
+    @classmethod
+    def children(cls, obj):
+        """NoisyValue leaves contained in obj, in the order rebuild()/to_dict() expect."""
+        raise NotImplementedError
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        """An equivalent container with each leaf NoisyValue replaced by next(it)."""
+        raise NotImplementedError
+
+
+# ── column Containers: what can live inside a DataFrame column ─────────────────
+#
+# Matched against a pandas Series (via its backing array's dtype) rather than
+# a bare value. Kept in their own registry, separate from _KINDS below, since
+# a column is never a valid top-level save() argument on its own.
+
+class PlainColumnKind(Container):
+    tag = "plain"
+
+    @classmethod
+    def matches(cls, obj):
+        return isinstance(obj, pd.Series) and type(obj.array) not in _NOISY_COLUMN_CLASSES.values()
+
+    @classmethod
+    def children(cls, obj):
+        return []
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        return obj
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"kind": cls.tag, "dtype": str(obj.dtype), "values": obj.tolist()}
+
+    @classmethod
+    def from_dict(cls, d, built):
+        return pd.Series(d["values"], dtype=d["dtype"])
+
+
+class NoisyColumnKind(Container):
+    """Shared logic for NoisyFloat/NoisyInt/NoisyBool columns.
+
+    Values are masked per-row (pandas' nullable-array convention), so
+    children()/rebuild() skip masked positions rather than treating every row
+    as a leaf the way ArrayKind does.
+    """
+
+    array_cls = None
+
+    @classmethod
+    def matches(cls, obj):
+        return isinstance(obj, pd.Series) and type(obj.array) is cls.array_cls
+
+    @classmethod
+    def children(cls, obj):
+        arr = obj.array
+        return [arr[i] for i in range(len(arr)) if not arr._mask[i]]
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        arr = obj.array
+        values = [pd.NA if arr._mask[i] else next(it) for i in range(len(arr))]
+        return pd.Series(cls.array_cls._from_sequence(values), index=obj.index)
+
+    @classmethod
+    def to_dict(cls, obj):
+        arr = obj.array
+        elements = [
+            None if arr._mask[i]
+            else {"obs": arr[i]._obs, "root": _node_name(arr[i]._root)}
+            for i in range(len(arr))
+        ]
+        return {"kind": cls.tag, "elements": elements}
+
+    @classmethod
+    def from_dict(cls, d, built):
+        scalar_cls = cls.array_cls._scalar_cls
+        values = [
+            pd.NA if e is None else scalar_cls(e["obs"], built[e["root"]])
+            for e in d["elements"]
+        ]
+        return pd.Series(cls.array_cls._from_sequence(values))
+
+
+class NoisyFloatColumnKind(NoisyColumnKind):
+    tag = "noisyfloat"
+    array_cls = NoisyFloatArray
+
+
+class NoisyIntColumnKind(NoisyColumnKind):
+    tag = "noisyint"
+    array_cls = NoisyIntArray
+
+
+class NoisyBoolColumnKind(NoisyColumnKind):
+    tag = "noisybool"
+    array_cls = NoisyBoolArray
+
+
+_COLUMN_KINDS = [NoisyFloatColumnKind, NoisyIntColumnKind, NoisyBoolColumnKind, PlainColumnKind]
+_COLUMN_KIND_BY_TAG = {k.tag: k for k in _COLUMN_KINDS}
+
+
+def _column_kind_for(series):
+    for kind in _COLUMN_KINDS:
+        if kind.matches(series):
+            return kind
+    raise TypeError(f"Unsupported column dtype: {series.dtype}")
+
+
+class ValueKind(Container):
     tag = "value"
 
     @classmethod
@@ -163,7 +230,7 @@ class ValueKind(Kind):
         return _TYPE_CLASSES[d["type"]](d["obs"], built[d["root"]])
 
 
-class ArrayKind(Kind):
+class ArrayKind(Container):
     tag = "array"
 
     @classmethod
@@ -200,7 +267,7 @@ class ArrayKind(Kind):
         return arr
 
 
-class TableKind(Kind):
+class TableKind(Container):
     tag = "table"
 
     @classmethod
@@ -211,39 +278,35 @@ class TableKind(Kind):
     def children(cls, obj):
         flat = []
         for col in obj.columns:
-            arr = obj[col].array
-            if type(arr) in _NOISY_COLUMN_CLASSES.values():
-                for i in range(len(arr)):
-                    if not arr._mask[i]:
-                        flat.append(arr[i])
+            flat.extend(_column_kind_for(obj[col]).children(obj[col]))
         return flat
 
     @classmethod
     def rebuild(cls, obj, it):
-        columns = {}
-        for col in obj.columns:
-            arr = obj[col].array
-            if type(arr) not in _NOISY_COLUMN_CLASSES.values():
-                columns[col] = obj[col]
-                continue
-            values = [pd.NA if arr._mask[i] else next(it) for i in range(len(arr))]
-            columns[col] = pd.Series(type(arr)._from_sequence(values), index=obj.index)
+        columns = {
+            col: _column_kind_for(obj[col]).rebuild(obj[col], it) for col in obj.columns
+        }
         return pd.DataFrame(columns, index=obj.index)
 
     @classmethod
     def to_dict(cls, obj):
         return {
             "kind": cls.tag,
-            "columns": {col: _column_to_dict(obj[col]) for col in obj.columns},
+            "columns": {
+                col: _column_kind_for(obj[col]).to_dict(obj[col]) for col in obj.columns
+            },
         }
 
     @classmethod
     def from_dict(cls, d, built):
-        columns = {name: _load_column(col, built) for name, col in d["columns"].items()}
+        columns = {
+            name: _COLUMN_KIND_BY_TAG[col["kind"]].from_dict(col, built)
+            for name, col in d["columns"].items()
+        }
         return pd.DataFrame(columns)
 
 
-class SequenceKind(Kind):
+class SequenceKind(Container):
     """Shared logic for top-level list/tuple containers.
 
     Items must be a NoisyValue, ndarray, or DataFrame — a list/tuple is only
