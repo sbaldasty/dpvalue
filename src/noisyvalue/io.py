@@ -2,6 +2,7 @@
 
 import json
 import numpy as np
+import pandas as pd
 import sympy as sp
 
 from .consolidate import consolidate
@@ -11,9 +12,9 @@ from .core import (
 from .graph import DerivedNode
 from .graph import LatentNode
 from .graph import NoiseNode
-from .util import fresh_name
+from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
-_VERSION = 2
+_VERSION = 3
 
 _TYPE_CLASSES = {
     "NoisyFloat": NoisyFloat,
@@ -22,6 +23,12 @@ _TYPE_CLASSES = {
 }
 
 _TYPE_NAMES = {v: k for k, v in _TYPE_CLASSES.items()}
+
+_NOISY_COLUMN_CLASSES = {
+    "noisyfloat": NoisyFloatArray,
+    "noisyint": NoisyIntArray,
+    "noisybool": NoisyBoolArray,
+}
 
 _SP_NAMESPACE = vars(sp)
 
@@ -37,12 +44,31 @@ def _flatten_container(container):
         elif isinstance(item, np.ndarray):
             for v in item.flat:
                 flat.append(v)
+        elif isinstance(item, pd.DataFrame):
+            for col in item.columns:
+                arr = item[col].array
+                if type(arr) in _NOISY_COLUMN_CLASSES.values():
+                    for i in range(len(arr)):
+                        if not arr._mask[i]:
+                            flat.append(arr[i])
         elif isinstance(item, (list, tuple)):
             for sub in item:
                 _walk(sub)
 
     _walk(container)
     return flat
+
+
+def _rebuild_table(df, it):
+    columns = {}
+    for col in df.columns:
+        arr = df[col].array
+        if type(arr) not in _NOISY_COLUMN_CLASSES.values():
+            columns[col] = df[col]
+            continue
+        values = [pd.NA if arr._mask[i] else next(it) for i in range(len(arr))]
+        columns[col] = pd.Series(type(arr)._from_sequence(values), index=df.index)
+    return pd.DataFrame(columns, index=df.index)
 
 
 def _rebuild_container(container, it):
@@ -53,6 +79,8 @@ def _rebuild_container(container, it):
         for i in range(arr.size):
             arr.flat[i] = next(it)
         return arr
+    if isinstance(container, pd.DataFrame):
+        return _rebuild_table(container, it)
     if isinstance(container, (list, tuple)):
         rebuilt = [_rebuild_container(sub, it) for sub in container]
         return tuple(rebuilt) if isinstance(container, tuple) else rebuilt
@@ -81,6 +109,13 @@ def _collect_nodes(container):
         elif isinstance(item, np.ndarray):
             for v in item.flat:
                 visit_value(v)
+        elif isinstance(item, pd.DataFrame):
+            for col in item.columns:
+                arr = item[col].array
+                if type(arr) in _NOISY_COLUMN_CLASSES.values():
+                    for i in range(len(arr)):
+                        if not arr._mask[i]:
+                            visit_value(arr[i])
         elif isinstance(item, (list, tuple)):
             for sub in item:
                 visit(sub)
@@ -135,11 +170,34 @@ def _array_to_dict(arr):
     }
 
 
+def _column_to_dict(series):
+    arr = series.array
+    for column_kind, cls in _NOISY_COLUMN_CLASSES.items():
+        if type(arr) is cls:
+            elements = [
+                {"missing": True} if arr._mask[i]
+                else {"obs": arr[i]._obs, "root": _node_name(arr[i]._root)}
+                for i in range(len(arr))
+            ]
+            return {"kind": column_kind, "elements": elements}
+    return {"kind": "plain", "dtype": str(series.dtype), "values": series.tolist()}
+
+
+def _table_to_dict(df):
+    return {
+        "kind": "table",
+        "index": list(df.index),
+        "columns": {col: _column_to_dict(df[col]) for col in df.columns},
+    }
+
+
 def _container_to_dict(container):
     if isinstance(container, NoisyValue):
         return _value_to_dict(container)
     if isinstance(container, np.ndarray):
         return _array_to_dict(container)
+    if isinstance(container, pd.DataFrame):
+        return _table_to_dict(container)
     if isinstance(container, (list, tuple)):
         kind = "tuple" if isinstance(container, tuple) else "list"
         items = []
@@ -148,9 +206,11 @@ def _container_to_dict(container):
                 items.append(_value_to_dict(item))
             elif isinstance(item, np.ndarray):
                 items.append(_array_to_dict(item))
+            elif isinstance(item, pd.DataFrame):
+                items.append(_table_to_dict(item))
             else:
                 raise TypeError(
-                    f"List/tuple items must be NoisyValue or ndarray, got {type(item)}"
+                    f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
                 )
         return {"kind": kind, "items": items}
     raise TypeError(f"Unsupported container type: {type(container)}")
@@ -252,17 +312,37 @@ def _load_array(adict, built):
     return arr
 
 
+def _load_column(cdict, built, index):
+    if cdict["kind"] == "plain":
+        return pd.Series(cdict["values"], dtype=cdict["dtype"], index=index)
+    scalar_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]._scalar_cls
+    values = [
+        pd.NA if e.get("missing") else scalar_cls(e["obs"], built[e["root"]])
+        for e in cdict["elements"]
+    ]
+    array_cls = _NOISY_COLUMN_CLASSES[cdict["kind"]]
+    return pd.Series(array_cls._from_sequence(values), index=index)
+
+
+def _load_table(tdict, built):
+    # Build each column with the target index up front — passing `index=` to
+    # the DataFrame constructor separately would realign-by-label instead.
+    index = tdict["index"]
+    columns = {name: _load_column(col, built, index) for name, col in tdict["columns"].items()}
+    return pd.DataFrame(columns)
+
+
 def _load_container(cdict, built):
     kind = cdict["kind"]
     if kind == "value":
         return _load_element(cdict, built)
     if kind == "array":
         return _load_array(cdict, built)
+    if kind == "table":
+        return _load_table(cdict, built)
     if kind in ("list", "tuple"):
-        items = [
-            _load_element(item, built) if item["kind"] == "value" else _load_array(item, built)
-            for item in cdict["items"]
-        ]
+        loaders = {"value": _load_element, "array": _load_array, "table": _load_table}
+        items = [loaders[item["kind"]](item, built) for item in cdict["items"]]
         return tuple(items) if kind == "tuple" else items
     raise ValueError(f"Unknown container kind: {kind!r}")
 

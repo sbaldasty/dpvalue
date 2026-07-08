@@ -16,6 +16,8 @@ dependencies = [
   "ipykernel>=7.2.0",
   "jupyter>=1.1.1",
   "numpy>=2.4.4",
+  "pandas>=3.0.3",
+  "polars>=1.42.1",
   "scipy>=1.17.1",
   "sympy>=1.14.0",
 ]
@@ -45,4 +47,4 @@ pythonpath = ["src"]
 addopts = "-q"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/noisyvalue"]

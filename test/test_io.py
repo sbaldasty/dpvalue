@@ -1,5 +1,6 @@
 import json
 import numpy as np
+import pandas as pd
 import pytest
 
 import conftest as noise
@@ -8,6 +9,7 @@ from noisyvalue.core import (
     noisy_value_sampler, sample_noisy_values,
 )
 from noisyvalue.io import load, save
+from noisyvalue.pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 
 def _roundtrip(tmp_path, container):
@@ -145,7 +147,7 @@ def test_saved_file_is_valid_json_with_expected_keys(tmp_path):
     p = tmp_path / "data.json"
     save(p, v)
     doc = json.loads(p.read_text())
-    assert doc["version"] == 2
+    assert doc["version"] == 3
     assert "nodes" in doc
     assert "container" in doc
     assert doc["container"]["kind"] == "value"
@@ -156,3 +158,100 @@ def test_load_rejects_unknown_version(tmp_path):
     p.write_text(json.dumps({"version": 99, "nodes": {}, "container": {}}))
     with pytest.raises(ValueError, match="version"):
         load(p)
+
+
+# ── DataFrame container: plain + noisy columns ────────────────────────────────
+
+def test_table_roundtrips_plain_and_noisy_columns(tmp_path):
+    floats = [NoisyFloat.draw(float(i), noise.gaussian(0, 1), rng=i) for i in range(3)]
+    df = pd.DataFrame({
+        "label": ["a", "b", "c"],
+        "value": pd.Series(NoisyFloatArray._from_sequence(floats)),
+    })
+    rt = _roundtrip(tmp_path, df)
+
+    assert isinstance(rt, pd.DataFrame)
+    assert rt["label"].tolist() == ["a", "b", "c"]
+    assert rt["value"].dtype.name == "noisyfloat"
+    assert [rt["value"].array[i]._obs for i in range(3)] == pytest.approx(
+        [v._obs for v in floats]
+    )
+
+
+def test_table_preserves_custom_index(tmp_path):
+    floats = [NoisyFloat.lift(1.0), NoisyFloat.lift(2.0)]
+    # Build the Series with its final index directly — passing `index=` to the
+    # DataFrame constructor instead would realign-by-label against the
+    # Series' default RangeIndex and turn every entry into NA.
+    df = pd.DataFrame({
+        "value": pd.Series(NoisyFloatArray._from_sequence(floats), index=["row1", "row2"]),
+    })
+    rt = _roundtrip(tmp_path, df)
+    assert list(rt.index) == ["row1", "row2"]
+
+
+def test_table_missing_values_survive_roundtrip(tmp_path):
+    a = NoisyFloat.draw(5.0, noise.gaussian(0, 1), rng=1)
+    df = pd.DataFrame({"value": pd.Series(NoisyFloatArray._from_sequence([a, None]))})
+    rt = _roundtrip(tmp_path, df)
+    assert rt["value"].isna().tolist() == [False, True]
+    assert rt["value"].iloc[1] is pd.NA
+    assert rt["value"].array[0]._obs == pytest.approx(a._obs)
+
+
+def test_table_with_int_and_bool_columns_and_plain_columns(tmp_path):
+    n = NoisyInt.binomial(100, 0.3, obs=40)
+    flag = NoisyBool.lift(True)
+    df = pd.DataFrame({
+        "n": pd.Series(NoisyIntArray._from_sequence([n, None])),
+        "flag": pd.Series(NoisyBoolArray._from_sequence([flag, None])),
+        "plain_int": [1, 2],
+        "plain_float": [1.5, float("nan")],
+    })
+    rt = _roundtrip(tmp_path, df)
+
+    assert rt["n"].dtype.name == "noisyint"
+    assert rt["flag"].dtype.name == "noisybool"
+    assert rt["n"].isna().tolist() == [False, True]
+    assert rt["flag"].isna().tolist() == [False, True]
+    assert rt["n"].array[0]._obs == n._obs
+    assert bool(rt["flag"].array[0]._obs) is True
+    assert rt["plain_int"].tolist() == [1, 2]
+    assert rt["plain_float"].iloc[0] == pytest.approx(1.5)
+    assert np.isnan(rt["plain_float"].iloc[1])
+
+
+def test_table_column_shares_latent_with_top_level_value(tmp_path):
+    a = NoisyFloat.draw(5.0, noise.gaussian(0, 1), rng=1)
+    b = a * 2.0  # shares a's latent/noise node
+    df = pd.DataFrame({"value": pd.Series(NoisyFloatArray._from_sequence([b]))})
+
+    rt_a, rt_df = _roundtrip(tmp_path, [a, df])
+    rt_b = rt_df["value"].array[0]
+
+    draws_b, draws_a = sample_noisy_values(rt_b, rt_a, n=500, rng=2)
+    assert np.allclose(draws_b.draws, 2.0 * draws_a.draws)
+
+
+def test_table_nested_in_list_alongside_other_containers(tmp_path):
+    v = NoisyFloat.draw(1.0, noise.gaussian(0, 1), rng=0)
+    df = pd.DataFrame({"value": pd.Series(NoisyFloatArray._from_sequence([NoisyFloat.lift(9.0)]))})
+    rt = _roundtrip(tmp_path, [v, df])
+    assert isinstance(rt, list)
+    rt_v, rt_df = rt
+    assert isinstance(rt_v, NoisyFloat)
+    assert isinstance(rt_df, pd.DataFrame)
+    assert rt_df["value"].array[0]._obs == pytest.approx(9.0)
+
+
+def test_table_kind_spot_check(tmp_path):
+    df = pd.DataFrame({
+        "label": ["x"],
+        "value": pd.Series(NoisyFloatArray._from_sequence([NoisyFloat.lift(1.0)])),
+    })
+    p = tmp_path / "table.json"
+    save(p, df)
+    doc = json.loads(p.read_text())
+    assert doc["container"]["kind"] == "table"
+    assert doc["container"]["columns"]["label"]["kind"] == "plain"
+    assert doc["container"]["columns"]["value"]["kind"] == "noisyfloat"
