@@ -80,14 +80,6 @@ class Unit:
         raise NotImplementedError
 
 
-# ── Container: one class per top-level container shape ─────────────────────────
-#
-# Each Container knows how to find the NoisyValue leaves inside a container
-# (children), swap them out for freshly consolidated ones (rebuild), and
-# convert to/from the JSON-able dict form (to_dict/from_dict). save()/load()
-# just dispatch to the matching Container instead of repeating an isinstance
-# chain at every step.
-
 class Container(Unit):
     @classmethod
     def children(cls, obj):
@@ -100,13 +92,7 @@ class Container(Unit):
         raise NotImplementedError
 
 
-# ── column Containers: what can live inside a DataFrame column ─────────────────
-#
-# Matched against a pandas Series (via its backing array's dtype) rather than
-# a bare value. Kept in their own registry, separate from _KINDS below, since
-# a column is never a valid top-level save() argument on its own.
-
-class PlainColumnKind(Container):
+class PlainColumnContainer(Container):
     tag = "plain"
 
     @classmethod
@@ -130,14 +116,7 @@ class PlainColumnKind(Container):
         return pd.Series(d["values"], dtype=d["dtype"])
 
 
-class NoisyColumnKind(Container):
-    """Shared logic for NoisyFloat/NoisyInt/NoisyBool columns.
-
-    Values are masked per-row (pandas' nullable-array convention), so
-    children()/rebuild() skip masked positions rather than treating every row
-    as a leaf the way ArrayKind does.
-    """
-
+class NoisyColumnContainer(Container):
     array_cls = None
 
     @classmethod
@@ -175,22 +154,22 @@ class NoisyColumnKind(Container):
         return pd.Series(cls.array_cls._from_sequence(values))
 
 
-class NoisyFloatColumnKind(NoisyColumnKind):
+class FloatColumnContainer(NoisyColumnContainer):
     tag = "noisyfloat"
     array_cls = NoisyFloatArray
 
 
-class NoisyIntColumnKind(NoisyColumnKind):
+class IntColumnContainer(NoisyColumnContainer):
     tag = "noisyint"
     array_cls = NoisyIntArray
 
 
-class NoisyBoolColumnKind(NoisyColumnKind):
+class BoolColumnContainer(NoisyColumnContainer):
     tag = "noisybool"
     array_cls = NoisyBoolArray
 
 
-_COLUMN_KINDS = [NoisyFloatColumnKind, NoisyIntColumnKind, NoisyBoolColumnKind, PlainColumnKind]
+_COLUMN_KINDS = [FloatColumnContainer, IntColumnContainer, BoolColumnContainer, PlainColumnContainer]
 _COLUMN_KIND_BY_TAG = {k.tag: k for k in _COLUMN_KINDS}
 
 
@@ -201,7 +180,7 @@ def _column_kind_for(series):
     raise TypeError(f"Unsupported column dtype: {series.dtype}")
 
 
-class ValueKind(Container):
+class ValueContainer(Container):
     tag = "value"
 
     @classmethod
@@ -230,7 +209,7 @@ class ValueKind(Container):
         return _TYPE_CLASSES[d["type"]](d["obs"], built[d["root"]])
 
 
-class ArrayKind(Container):
+class ArrayContainer(Container):
     tag = "array"
 
     @classmethod
@@ -263,11 +242,11 @@ class ArrayKind(Container):
     def from_dict(cls, d, built):
         arr = np.empty(tuple(d["shape"]), dtype=object)
         for i, edict in enumerate(d["elements"]):
-            arr.flat[i] = ValueKind.from_dict(edict, built)
+            arr.flat[i] = ValueContainer.from_dict(edict, built)
         return arr
 
 
-class TableKind(Container):
+class TableContainer(Container):
     tag = "table"
 
     @classmethod
@@ -306,7 +285,7 @@ class TableKind(Container):
         return pd.DataFrame(columns)
 
 
-class SequenceKind(Container):
+class SequenceContainer(Container):
     """Shared logic for top-level list/tuple containers.
 
     Items must be a NoisyValue, ndarray, or DataFrame — a list/tuple is only
@@ -323,7 +302,7 @@ class SequenceKind(Container):
     @classmethod
     def _item_kind(cls, item):
         item_kind = _kind_for(item)
-        if item_kind not in (ValueKind, ArrayKind, TableKind):
+        if item_kind not in (ValueContainer, ArrayContainer, TableContainer):
             raise TypeError(
                 f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
             )
@@ -351,17 +330,17 @@ class SequenceKind(Container):
         )
 
 
-class ListKind(SequenceKind):
+class ListContainer(SequenceContainer):
     tag = "list"
     container_type = list
 
 
-class TupleKind(SequenceKind):
+class TupleContainer(SequenceContainer):
     tag = "tuple"
     container_type = tuple
 
 
-_KINDS = [ValueKind, ArrayKind, TableKind, ListKind, TupleKind]
+_KINDS = [ValueContainer, ArrayContainer, TableContainer, ListContainer, TupleContainer]
 _KIND_BY_TAG = {k.tag: k for k in _KINDS}
 
 
