@@ -6,7 +6,7 @@ import pandas as pd
 import sympy as sp
 
 from .consolidate import consolidate
-from .core import NoisyValue, NoisyFloat, NoisyInt, NoisyBool
+from .core import NoisyFloat, NoisyInt, NoisyBool
 from .graph import DerivedNode, LatentNode, NoiseNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
@@ -29,6 +29,13 @@ _NOISY_COLUMN_CLASSES = {
 _SP_NAMESPACE = vars(sp)
 
 
+def deserialize(d, built, accept):
+    cls = _KIND_BY_TAG[d["kind"]]
+    if not issubclass(cls, accept):
+        raise TypeError(f"Expected {accept.__name__}, got {cls.__name__}")
+    return cls.from_dict(d, built)
+
+
 def _node_name(node):
     """Return a serialization name for a node that is stable within a save() call."""
     if isinstance(node, DerivedNode):
@@ -47,16 +54,16 @@ def _noise_node_params_to_dict(node):
 
 def _node_to_dict(node):
     if isinstance(node, LatentNode):
-        return {"kind": "latent"}
+        return {"kind": "LatentUnit"}
     if isinstance(node, NoiseNode):
         return {
-            "kind": "noise",
+            "kind": "NoiseUnit",
             "source": _noise_node_params_to_dict(node),
             "deps": [_node_name(dep) for dep in node.deps],
         }
     if isinstance(node, DerivedNode):
         return {
-            "kind": "derived",
+            "kind": "DerivedUnit",
             "definition": sp.srepr(node.expr),
             "constraints": [sp.srepr(c) for c in node.constraints],
             "deps": [_node_name(dep) for dep in node.deps],
@@ -67,7 +74,7 @@ def _node_to_dict(node):
 class Unit:
     @classmethod
     def matches(cls, obj):
-        raise NotImplementedError
+        return isinstance(obj, cls.matches_type)
 
     @classmethod
     def to_dict(cls, obj):
@@ -175,10 +182,6 @@ def _column_kind_for(series):
 
 class ValueContainer(Container):
     @classmethod
-    def matches(cls, obj):
-        return isinstance(obj, NoisyValue)
-
-    @classmethod
     def children(cls, obj):
         return [obj]
 
@@ -190,14 +193,25 @@ class ValueContainer(Container):
     def to_dict(cls, obj):
         return {
             "kind": cls.__name__,
-            "type": _TYPE_NAMES[type(obj)],
             "obs": obj._obs,
             "root": _node_name(obj._root),
         }
 
     @classmethod
     def from_dict(cls, d, built):
-        return _TYPE_CLASSES[d["type"]](d["obs"], built[d["root"]])
+        return cls.matches_type(d["obs"], built[d["root"]])
+
+
+class FloatContainer(ValueContainer):
+    matches_type = NoisyFloat
+
+
+class IntContainer(ValueContainer):
+    matches_type = NoisyInt
+
+
+class BoolContainer(ValueContainer):
+    matches_type = NoisyBool
 
 
 class ArrayContainer(Container):
@@ -222,7 +236,7 @@ class ArrayContainer(Container):
             "kind": cls.__name__,
             "shape": list(obj.shape),
             "elements": [
-                {"type": _TYPE_NAMES[type(v)], "obs": v._obs, "root": _node_name(v._root)}
+                {"kind": _kind_for(v).__name__, "obs": v._obs, "root": _node_name(v._root)}
                 for v in obj.flat
             ],
         }
@@ -231,7 +245,7 @@ class ArrayContainer(Container):
     def from_dict(cls, d, built):
         arr = np.empty(tuple(d["shape"]), dtype=object)
         for i, edict in enumerate(d["elements"]):
-            arr.flat[i] = ValueContainer.from_dict(edict, built)
+            arr.flat[i] = deserialize(edict, built, accept=ValueContainer)
         return arr
 
 
@@ -287,7 +301,7 @@ class TupleContainer(Container):
     @classmethod
     def _item_kind(cls, item):
         item_kind = _kind_for(item)
-        if item_kind not in (ValueContainer, ArrayContainer, TableContainer):
+        if item_kind not in (FloatContainer, IntContainer, BoolContainer, ArrayContainer, TableContainer):
             raise TypeError(
                 f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
             )
@@ -315,7 +329,7 @@ class TupleContainer(Container):
         )
 
 
-_KINDS = [ValueContainer, ArrayContainer, TableContainer, TupleContainer]
+_KINDS = [FloatContainer, IntContainer, BoolContainer, ArrayContainer, TableContainer, TupleContainer]
 _KIND_BY_TAG = {k.__name__: k for k in _KINDS}
 
 
@@ -402,13 +416,13 @@ def _load_nodes(nodes_dict):
         def remap(s, _map=name_map):
             return _parse_expr(s, _map)
 
-        if kind == "latent":
+        if kind == "LatentUnit":
             node = LatentNode()
             name_map[old_name] = node.expr
-        elif kind == "noise":
+        elif kind == "NoiseUnit":
             node = _load_noise_node(nd["source"], name_map, deps=deps)
             name_map[old_name] = node.expr
-        elif kind == "derived":
+        elif kind == "DerivedUnit":
             node = DerivedNode(
                 remap(nd["definition"]),
                 constraints=[remap(c) for c in nd["constraints"]],

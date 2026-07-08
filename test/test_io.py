@@ -150,7 +150,7 @@ def test_saved_file_is_valid_json_with_expected_keys(tmp_path):
     assert doc["version"] == 3
     assert "nodes" in doc
     assert "container" in doc
-    assert doc["container"]["kind"] == "ValueContainer"
+    assert doc["container"]["kind"] == "FloatContainer"
 
 
 def test_load_rejects_unknown_version(tmp_path):
