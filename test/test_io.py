@@ -60,6 +60,18 @@ def test_binomial_noise_source_survives_roundtrip(tmp_path):
     assert orig_ci == pytest.approx(rt_ci, abs=2.0)
 
 
+# ── discrete gaussian noise source ────────────────────────────────────────────
+
+def test_discrete_gaussian_noise_source_survives_roundtrip(tmp_path):
+    v = NoisyInt.discrete_gaussian(10, rng=42)
+    rt = _roundtrip(tmp_path, v)
+    assert isinstance(rt, NoisyInt)
+    assert int(rt) == int(v)
+    orig_ci = v.credible_interval(rng=0)
+    rt_ci = rt.credible_interval(rng=0)
+    assert orig_ci == pytest.approx(rt_ci, abs=2.0)
+
+
 # ── shared latent variable: joint structure survives ─────────────────────────
 
 def test_shared_latent_dependency_survives_roundtrip(tmp_path):

@@ -81,6 +81,9 @@ class DerivedNode(Node):
 
 
 class NoiseNode(Node):
+    # Maps type_name to class for serialization
+    registry = {}
+
     def __init__(self, params, deps=()):
         super().__init__(deps)
         self.params = list(params)
@@ -90,6 +93,14 @@ class NoiseNode(Node):
         params = [x for x in cls.__dict__.values() if isinstance(x, Parameter)]
         params.sort(key=lambda p: p.index)
         cls._parameters = tuple(params)
+
+        # Register the subclass with its type_name for serialization
+        if cls.type_name is None:
+            raise TypeError(f"{cls.__name__} must define a class-level type_name")
+        existing = NoiseNode.registry.get(cls.type_name)
+        if existing is not None and existing is not cls:
+            raise TypeError(f"type_name {cls.type_name!r} already registered to {existing.__name__}")
+        NoiseNode.registry[cls.type_name] = cls
 
     def param_symbols(self):
         return {s for p in self.params for s in p.free_symbols}
@@ -116,6 +127,7 @@ class NoiseNode(Node):
 
 
 class NormalNode(NoiseNode):
+    type_name = "normal"
     loc = Parameter(0)
     scale = Parameter(1)
 
@@ -139,6 +151,7 @@ class NormalNode(NoiseNode):
 
 
 class BinomialNode(NoiseNode):
+    type_name = "binomial"
     trials = Parameter(0)
     prob = Parameter(1)
 
@@ -167,14 +180,7 @@ class BinomialNode(NoiseNode):
 
 
 class DiscreteGaussianNode(NoiseNode):
-    """Discrete Gaussian noise over the integers, parameterized by loc and scale (σ).
-
-    PMF ∝ exp(-(k - loc)² / (2σ²)) for k ∈ ℤ.
-
-    Used by the US Census Bureau for differentially private integer counts.
-    sympy_rv() returns a continuous Normal approximation (accurate for σ >> 1).
-    """
-
+    type_name = "discrete_gaussian"
     loc = Parameter(0)
     scale = Parameter(1)
 

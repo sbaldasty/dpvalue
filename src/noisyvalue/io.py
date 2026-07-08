@@ -8,10 +8,8 @@ from .consolidate import consolidate
 from .core import (
     NoisyValue, NoisyFloat, NoisyInt, NoisyBool,
 )
-from .graph import BinomialNode
 from .graph import DerivedNode
 from .graph import LatentNode
-from .graph import NormalNode
 from .graph import NoiseNode
 from .util import fresh_name
 
@@ -91,13 +89,9 @@ def _collect_nodes(container):
     return nodes
 
 
-_NOISE_NODE_TYPE_NAMES = {NormalNode: "normal", BinomialNode: "binomial"}
-_NOISE_NODE_TYPES = {v: k for k, v in _NOISE_NODE_TYPE_NAMES.items()}
-
-
 def _noise_node_params_to_dict(node):
-    t = _NOISE_NODE_TYPE_NAMES.get(type(node))
-    if t is None:
+    t = type(node).type_name
+    if NoiseNode.registry.get(t) is not type(node):
         raise TypeError(f"Unknown NoiseNode type: {type(node)}")
     return {"type": t, "params": [sp.srepr(p) for p in node.params]}
 
@@ -205,7 +199,7 @@ def _parse_expr(s, name_map):
 
 def _load_noise_node(source_dict, name_map, deps=()):
     t = source_dict["type"]
-    cls = _NOISE_NODE_TYPES.get(t)
+    cls = NoiseNode.registry.get(t)
     if cls is None:
         raise ValueError(f"Unknown source type: {t!r}")
     params = [_parse_expr(p, name_map) for p in source_dict["params"]]
