@@ -147,7 +147,7 @@ def test_saved_file_is_valid_json_with_expected_keys(tmp_path):
     p = tmp_path / "data.json"
     save(p, v)
     doc = json.loads(p.read_text())
-    assert doc["version"] == 3
+    assert doc["version"] == 4
     assert "nodes" in doc
     assert "container" in doc
     assert doc["container"]["kind"] == "FloatContainer"

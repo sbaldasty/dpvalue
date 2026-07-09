@@ -7,10 +7,10 @@ import sympy as sp
 
 from .consolidate import consolidate
 from .core import NoisyFloat, NoisyInt, NoisyBool
-from .graph import DerivedNode, LatentNode, NoiseNode
+from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
-_VERSION = 3
+_VERSION = 4
 
 _NOISY_COLUMN_CLASSES = {
     "noisyfloat": NoisyFloatArray,
@@ -35,34 +35,6 @@ def _node_name(node):
     return str(node.expr)
 
 
-# ── node serialization ──────────────────────────────────────────────────────────
-
-def _noise_node_params_to_dict(node):
-    t = type(node).type_name
-    if NoiseNode.registry.get(t) is not type(node):
-        raise TypeError(f"Unknown NoiseNode type: {type(node)}")
-    return {"type": t, "params": [sp.srepr(p) for p in node.params]}
-
-
-def _node_to_dict(node):
-    if isinstance(node, LatentNode):
-        return {"kind": "LatentUnit"}
-    if isinstance(node, NoiseNode):
-        return {
-            "kind": "NoiseUnit",
-            "source": _noise_node_params_to_dict(node),
-            "deps": [_node_name(dep) for dep in node.deps],
-        }
-    if isinstance(node, DerivedNode):
-        return {
-            "kind": "DerivedUnit",
-            "definition": sp.srepr(node.expr),
-            "constraints": [sp.srepr(c) for c in node.constraints],
-            "deps": [_node_name(dep) for dep in node.deps],
-        }
-    raise TypeError(f"Unknown Node type: {type(node)}")
-
-
 class Unit:
     @classmethod
     def matches(cls, obj):
@@ -75,6 +47,86 @@ class Unit:
     @classmethod
     def from_dict(cls, d, built):
         raise NotImplementedError
+
+
+class NodeUnit(Unit):
+    @classmethod
+    def to_dict(cls, node):
+        return {"kind": cls.__name__, "deps": [_node_name(dep) for dep in node.deps]}
+
+    @classmethod
+    def from_dict(cls, d, deps, remap):
+        raise NotImplementedError
+
+
+class LatentUnit(NodeUnit):
+    matches_type = LatentNode
+
+    @classmethod
+    def from_dict(cls, d, deps, remap):
+        return LatentNode()
+
+
+class DerivedUnit(NodeUnit):
+    matches_type = DerivedNode
+
+    @classmethod
+    def to_dict(cls, node):
+        d = super().to_dict(node)
+        d["definition"] = sp.srepr(node.expr)
+        d["constraints"] = [sp.srepr(c) for c in node.constraints]
+        return d
+
+    @classmethod
+    def from_dict(cls, d, deps, remap):
+        return DerivedNode(
+            remap(d["definition"]),
+            constraints=[remap(c) for c in d["constraints"]],
+            deps=deps,
+        )
+
+
+class NoiseUnit(NodeUnit):
+    @classmethod
+    def to_dict(cls, node):
+        d = super().to_dict(node)
+        d["params"] = [sp.srepr(p) for p in node.params]
+        return d
+
+    @classmethod
+    def from_dict(cls, d, deps, remap):
+        params = [remap(p) for p in d["params"]]
+        return cls.matches_type(params, deps)
+
+
+class NormalUnit(NoiseUnit):
+    matches_type = NormalNode
+
+
+class BinomialUnit(NoiseUnit):
+    matches_type = BinomialNode
+
+
+class DiscreteGaussianUnit(NoiseUnit):
+    matches_type = DiscreteGaussianNode
+
+
+_NODE_KINDS = [LatentUnit, DerivedUnit, NormalUnit, BinomialUnit, DiscreteGaussianUnit]
+_NODE_KIND_BY_TAG = {k.__name__: k for k in _NODE_KINDS}
+
+
+def _node_kind_for(obj):
+    for kind in _NODE_KINDS:
+        if kind.matches(obj):
+            return kind
+    return None
+
+
+def _node_to_dict(node):
+    kind = _node_kind_for(node)
+    if kind is None:
+        raise TypeError(f"Unknown Node type: {type(node)}")
+    return kind.to_dict(node)
 
 
 class Container(Unit):
@@ -272,13 +324,6 @@ class TableContainer(Container):
 
 
 class TupleContainer(Container):
-    """Shared logic for top-level tuple containers.
-
-    Items must be a NoisyValue, ndarray, or DataFrame — a tuple is only
-    ever one level deep, matching save()'s documented contract — so nested
-    lists/tuples are rejected rather than accepted silently.
-    """
-
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, tuple)
@@ -380,15 +425,6 @@ def _parse_expr(s, name_map):
     return expr
 
 
-def _load_noise_node(source_dict, name_map, deps=()):
-    t = source_dict["type"]
-    cls = NoiseNode.registry.get(t)
-    if cls is None:
-        raise ValueError(f"Unknown source type: {t!r}")
-    params = [_parse_expr(p, name_map) for p in source_dict["params"]]
-    return cls(params, deps)
-
-
 def _load_nodes(nodes_dict):
     order = _topo_sort(nodes_dict)
     name_map = {}  # old symbol name str -> new Symbol
@@ -396,27 +432,16 @@ def _load_nodes(nodes_dict):
 
     for old_name in order:
         nd = nodes_dict[old_name]
-        kind = nd["kind"]
+        kind = _NODE_KIND_BY_TAG.get(nd["kind"])
+        if kind is None:
+            raise ValueError(f"Unknown node kind: {nd['kind']!r}")
         deps = [built[dep_name] for dep_name in nd.get("deps", [])]
 
         def remap(s, _map=name_map):
             return _parse_expr(s, _map)
 
-        if kind == "LatentUnit":
-            node = LatentNode()
-            name_map[old_name] = node.expr
-        elif kind == "NoiseUnit":
-            node = _load_noise_node(nd["source"], name_map, deps=deps)
-            name_map[old_name] = node.expr
-        elif kind == "DerivedUnit":
-            node = DerivedNode(
-                remap(nd["definition"]),
-                constraints=[remap(c) for c in nd["constraints"]],
-                deps=deps,
-            )
-        else:
-            raise ValueError(f"Unknown node kind: {kind!r}")
-
+        node = kind.from_dict(nd, deps, remap)
+        name_map[old_name] = node.expr
         built[old_name] = node
 
     return built
