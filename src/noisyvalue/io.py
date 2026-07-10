@@ -22,19 +22,22 @@ _NOISY_COLUMN_CLASSES = {
 _SP_NAMESPACE = vars(sp)
 
 
+def serializer_for_tag(tag):
+    return Serializer._kinds[tag]
+
 def container_from_json(accept, d, built):
-    cls = kind_for_tag(d["kind"])
+    cls = serializer_for_tag(d["kind"])
     util.require_subclass(accept, cls)
     return cls.from_dict(d, built)
 
 def node_from_json(d, deps, remap):
-    cls = kind_for_tag(d["kind"])
-    util.require_subclass(NodeUnit, cls)
+    cls = serializer_for_tag(d["kind"])
+    util.require_subclass(NodeSerializer, cls)
     return cls.from_dict(d, deps, remap)
 
 def node_to_dict(node):
-    cls = _kind_for(node)
-    util.require_subclass(NodeUnit, cls)
+    cls = serializer_for_obj(node)
+    util.require_subclass(NodeSerializer, cls)
     return cls.to_dict(node)
 
 def _node_name(node):
@@ -44,15 +47,15 @@ def _node_name(node):
     return str(node.expr)
 
 
-class Unit:
+class Serializer:
     _kinds = {}
 
     @classmethod
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         for base in cls.__bases__:
-            Unit._kinds.pop(base.__name__, None)
-        Unit._kinds[cls.__name__] = cls
+            Serializer._kinds.pop(base.__name__, None)
+        Serializer._kinds[cls.__name__] = cls
 
     @classmethod
     def matches(cls, obj):
@@ -63,11 +66,7 @@ class Unit:
         raise NotImplementedError
 
 
-def kind_for_tag(tag):
-    return Unit._kinds[tag]
-
-
-class NodeUnit(Unit):
+class NodeSerializer(Serializer):
     @classmethod
     def to_dict(cls, node):
         return {"kind": cls.__name__, "deps": [_node_name(dep) for dep in node.deps]}
@@ -77,7 +76,7 @@ class NodeUnit(Unit):
         raise NotImplementedError
 
 
-class LatentUnit(NodeUnit):
+class LatentNodeSerializer(NodeSerializer):
     matches_type = LatentNode
 
     @classmethod
@@ -85,7 +84,7 @@ class LatentUnit(NodeUnit):
         return LatentNode()
 
 
-class DerivedUnit(NodeUnit):
+class DerivedNodeSerializer(NodeSerializer):
     matches_type = DerivedNode
 
     @classmethod
@@ -103,7 +102,7 @@ class DerivedUnit(NodeUnit):
             deps=deps)
 
 
-class NoiseUnit(NodeUnit):
+class NoiseNodeSerializer(NodeSerializer):
     @classmethod
     def to_dict(cls, node):
         d = super().to_dict(node)
@@ -116,19 +115,19 @@ class NoiseUnit(NodeUnit):
         return cls.matches_type(params, deps)
 
 
-class NormalUnit(NoiseUnit):
+class NormalNodeSerializer(NoiseNodeSerializer):
     matches_type = NormalNode
 
 
-class BinomialUnit(NoiseUnit):
+class BinomialNodeSerializer(NoiseNodeSerializer):
     matches_type = BinomialNode
 
 
-class DiscreteGaussianUnit(NoiseUnit):
+class DiscreteGaussianNodeSerializer(NoiseNodeSerializer):
     matches_type = DiscreteGaussianNode
 
 
-class Container(Unit):
+class StructureSerializer(Serializer):
     @classmethod
     def children(cls, obj):
         """NoisyValue leaves contained in obj, in the order rebuild()/to_dict() expect."""
@@ -144,11 +143,11 @@ class Container(Unit):
         raise NotImplementedError
 
 
-class ColumnContainer(Container):
+class ColumnSerializer(StructureSerializer):
     pass
 
 
-class PlainColumnContainer(ColumnContainer):
+class PlainColumnSerializer(ColumnSerializer):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.Series) and type(obj.array) not in _NOISY_COLUMN_CLASSES.values()
@@ -170,7 +169,7 @@ class PlainColumnContainer(ColumnContainer):
         return pd.Series(d["values"], dtype=d["dtype"])
 
 
-class NoisyColumnContainer(ColumnContainer):
+class NoisyColumnSerializer(ColumnSerializer):
     array_cls = None
 
     @classmethod
@@ -208,23 +207,23 @@ class NoisyColumnContainer(ColumnContainer):
         return pd.Series(cls.array_cls._from_sequence(values))
 
 
-class FloatColumnContainer(NoisyColumnContainer):
+class FloatColumnSerializer(NoisyColumnSerializer):
     array_cls = NoisyFloatArray
 
 
-class IntColumnContainer(NoisyColumnContainer):
+class IntColumnSerializer(NoisyColumnSerializer):
     array_cls = NoisyIntArray
 
 
-class BoolColumnContainer(NoisyColumnContainer):
+class BoolColumnSerializer(NoisyColumnSerializer):
     array_cls = NoisyBoolArray
 
 
-class TopLevelUnit(Container):
+class RootSerializer(StructureSerializer):
     pass
 
 
-class ValueContainer(TopLevelUnit):
+class ValueSerializer(RootSerializer):
     @classmethod
     def children(cls, obj):
         return [obj]
@@ -246,19 +245,19 @@ class ValueContainer(TopLevelUnit):
         return cls.matches_type(d["obs"], built[d["root"]])
 
 
-class FloatContainer(ValueContainer):
+class FloatValueSerializer(ValueSerializer):
     matches_type = NoisyFloat
 
 
-class IntContainer(ValueContainer):
+class IntValueSerializer(ValueSerializer):
     matches_type = NoisyInt
 
 
-class BoolContainer(ValueContainer):
+class BoolValueSerializer(ValueSerializer):
     matches_type = NoisyBool
 
 
-class ArrayContainer(TopLevelUnit):
+class ArraySerializer(RootSerializer):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, np.ndarray)
@@ -280,7 +279,7 @@ class ArrayContainer(TopLevelUnit):
             "kind": cls.__name__,
             "shape": list(obj.shape),
             "elements": [
-                {"kind": _kind_for(v).__name__, "obs": v._obs, "root": _node_name(v._root)}
+                {"kind": serializer_for_obj(v).__name__, "obs": v._obs, "root": _node_name(v._root)}
                 for v in obj.flat
             ],
         }
@@ -289,11 +288,11 @@ class ArrayContainer(TopLevelUnit):
     def from_dict(cls, d, built):
         arr = np.empty(tuple(d["shape"]), dtype=object)
         for i, edict in enumerate(d["elements"]):
-            arr.flat[i] = container_from_json(ValueContainer, edict, built)
+            arr.flat[i] = container_from_json(ValueSerializer, edict, built)
         return arr
 
 
-class TableContainer(TopLevelUnit):
+class TableSerializer(RootSerializer):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.DataFrame)
@@ -302,13 +301,13 @@ class TableContainer(TopLevelUnit):
     def children(cls, obj):
         flat = []
         for col in obj.columns:
-            flat.extend(_kind_for(obj[col]).children(obj[col]))
+            flat.extend(serializer_for_obj(obj[col]).children(obj[col]))
         return flat
 
     @classmethod
     def rebuild(cls, obj, it):
         columns = {
-            col: _kind_for(obj[col]).rebuild(obj[col], it) for col in obj.columns
+            col: serializer_for_obj(obj[col]).rebuild(obj[col], it) for col in obj.columns
         }
         return pd.DataFrame(columns, index=obj.index)
 
@@ -317,65 +316,65 @@ class TableContainer(TopLevelUnit):
         return {
             "kind": cls.__name__,
             "columns": {
-                col: _kind_for(obj[col]).to_dict(obj[col]) for col in obj.columns
+                col: serializer_for_obj(obj[col]).to_dict(obj[col]) for col in obj.columns
             },
         }
 
     @classmethod
     def from_dict(cls, d, built):
         columns = {
-            name: container_from_json(ColumnContainer, col, built)
+            name: container_from_json(ColumnSerializer, col, built)
             for name, col in d["columns"].items()
         }
         return pd.DataFrame(columns)
 
 
-class TupleContainer(TopLevelUnit):
+class TupleSerializer(RootSerializer):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, tuple)
 
     @classmethod
-    def _item_kind(cls, item):
-        item_kind = _kind_for(item)
-        if item_kind not in (FloatContainer, IntContainer, BoolContainer, ArrayContainer, TableContainer):
+    def _item_serializer(cls, item):
+        item_serializer = serializer_for_obj(item)
+        if item_serializer not in (FloatValueSerializer, IntValueSerializer, BoolValueSerializer, ArraySerializer, TableSerializer):
             raise TypeError(
                 f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
             )
-        return item_kind
+        return item_serializer
 
     @classmethod
     def children(cls, obj):
         flat = []
         for item in obj:
-            flat.extend(cls._item_kind(item).children(item))
+            flat.extend(cls._item_serializer(item).children(item))
         return flat
 
     @classmethod
     def rebuild(cls, obj, it):
-        return tuple(cls._item_kind(item).rebuild(item, it) for item in obj)
+        return tuple(cls._item_serializer(item).rebuild(item, it) for item in obj)
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.__name__, "items": [cls._item_kind(item).to_dict(item) for item in obj]}
+        return {"kind": cls.__name__, "items": [cls._item_serializer(item).to_dict(item) for item in obj]}
 
     @classmethod
     def from_dict(cls, d, built):
         return tuple(
-            container_from_json(TopLevelUnit, item, built) for item in d["items"]
+            container_from_json(RootSerializer, item, built) for item in d["items"]
         )
 
 
-def _kind_for(obj):
-    for kind in Unit._kinds.values():
-        if kind.matches(obj):
-            return kind
+def serializer_for_obj(obj):
+    for serializer in Serializer._kinds.values():
+        if serializer.matches(obj):
+            return serializer
     return None
 
 
-def _collect_nodes(kind, container):
+def _collect_nodes(serializer, container):
     nodes = {}
-    for v in kind.children(container):
+    for v in serializer.children(container):
         for node in v._root.closure():
             name = _node_name(node)
             if name not in nodes:
@@ -385,17 +384,17 @@ def _collect_nodes(kind, container):
 
 def save(path, container):
     """Save a NoisyValue, ndarray of NoisyValues, or list/tuple of either to a JSON file."""
-    kind = _kind_for(container)
-    if kind is None:
+    serializer = serializer_for_obj(container)
+    if serializer is None:
         raise TypeError(f"Unsupported container type: {type(container)}")
-    flat = kind.children(container)
+    flat = serializer.children(container)
     consolidated = consolidate(*flat)
-    container = kind.rebuild(container, iter(consolidated))
-    nodes = _collect_nodes(kind, container)
+    container = serializer.rebuild(container, iter(consolidated))
+    nodes = _collect_nodes(serializer, container)
     doc = {
         "version": _VERSION,
         "nodes": {name: node_to_dict(node) for name, node in nodes.items()},
-        "container": kind.to_dict(container),
+        "container": serializer.to_dict(container),
     }
     with open(path, "w") as f:
         json.dump(doc, f, indent=2)
@@ -451,4 +450,4 @@ def load(path):
     if doc.get("version") != _VERSION:
         raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
     built = _load_nodes(doc["nodes"])
-    return container_from_json(TopLevelUnit, doc["container"], built)
+    return container_from_json(RootSerializer, doc["container"], built)
