@@ -147,10 +147,10 @@ def test_saved_file_is_valid_json_with_expected_keys(tmp_path):
     p = tmp_path / "data.json"
     save(p, v)
     doc = json.loads(p.read_text())
-    assert doc["version"] == 4
+    assert doc["version"] == 5
     assert "nodes" in doc
     assert "container" in doc
-    assert doc["container"]["kind"] == "NoisyFloatSerializer"
+    assert doc["container"]["kind"] == "noisy_float"
 
 
 def test_load_rejects_unknown_version(tmp_path):
@@ -240,6 +240,6 @@ def test_table_kind_spot_check(tmp_path):
     p = tmp_path / "table.json"
     save(p, df)
     doc = json.loads(p.read_text())
-    assert doc["container"]["kind"] == "DataFrameSerializer"
-    assert doc["container"]["columns"]["label"]["kind"] == "PlainColumnSerializer"
-    assert doc["container"]["columns"]["value"]["kind"] == "FloatColumnSerializer"
+    assert doc["container"]["kind"] == "dataframe"
+    assert doc["container"]["columns"]["label"]["kind"] == "plain_column"
+    assert doc["container"]["columns"]["value"]["kind"] == "float_column"

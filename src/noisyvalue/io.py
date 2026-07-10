@@ -11,7 +11,7 @@ from .core import NoisyFloat, NoisyInt, NoisyBool
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
-_VERSION = 4
+_VERSION = 5
 
 _NOISY_COLUMN_CLASSES = {
     "noisyfloat": NoisyFloatArray,
@@ -44,19 +44,19 @@ def _node_name(node):
 
 class Serializer:
     subclasses = {}
+    tag = None
 
     @classmethod
     def for_tag(cls, tag):
         result = cls.subclasses[tag]
         util.require_subclass(cls, result)
         return result
-    
+
     @classmethod
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        for base in cls.__bases__:
-            Serializer.subclasses.pop(base.__name__, None)
-        Serializer.subclasses[cls.__name__] = cls
+        if "tag" in cls.__dict__:
+            Serializer.subclasses[cls.tag] = cls
 
     @classmethod
     def matches(cls, obj):
@@ -70,7 +70,7 @@ class Serializer:
 class NodeSerializer(Serializer):
     @classmethod
     def to_dict(cls, node):
-        return {"kind": cls.__name__, "deps": [_node_name(dep) for dep in node.deps]}
+        return {"kind": cls.tag, "deps": [_node_name(dep) for dep in node.deps]}
 
     @classmethod
     def from_dict(cls, d, deps, remap):
@@ -79,6 +79,7 @@ class NodeSerializer(Serializer):
 
 class LatentNodeSerializer(NodeSerializer):
     matches_type = LatentNode
+    tag = "latent"
 
     @classmethod
     def from_dict(cls, d, deps, remap):
@@ -87,6 +88,7 @@ class LatentNodeSerializer(NodeSerializer):
 
 class DerivedNodeSerializer(NodeSerializer):
     matches_type = DerivedNode
+    tag = "derived"
 
     @classmethod
     def to_dict(cls, node):
@@ -118,14 +120,17 @@ class NoiseNodeSerializer(NodeSerializer):
 
 class NormalNodeSerializer(NoiseNodeSerializer):
     matches_type = NormalNode
+    tag = "normal"
 
 
 class BinomialNodeSerializer(NoiseNodeSerializer):
     matches_type = BinomialNode
+    tag = "binomial"
 
 
 class DiscreteGaussianNodeSerializer(NoiseNodeSerializer):
     matches_type = DiscreteGaussianNode
+    tag = "discrete_gaussian"
 
 
 class StructureSerializer(Serializer):
@@ -149,6 +154,8 @@ class ColumnSerializer(StructureSerializer):
 
 
 class PlainColumnSerializer(ColumnSerializer):
+    tag = "plain_column"
+
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.Series) and type(obj.array) not in _NOISY_COLUMN_CLASSES.values()
@@ -163,7 +170,7 @@ class PlainColumnSerializer(ColumnSerializer):
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.__name__, "dtype": str(obj.dtype), "values": obj.tolist()}
+        return {"kind": cls.tag, "dtype": str(obj.dtype), "values": obj.tolist()}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -196,7 +203,7 @@ class NoisyColumnSerializer(ColumnSerializer):
             else {"obs": arr[i]._obs, "root": _node_name(arr[i]._root)}
             for i in range(len(arr))
         ]
-        return {"kind": cls.__name__, "elements": elements}
+        return {"kind": cls.tag, "elements": elements}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -210,14 +217,17 @@ class NoisyColumnSerializer(ColumnSerializer):
 
 class FloatColumnSerializer(NoisyColumnSerializer):
     array_cls = NoisyFloatArray
+    tag = "float_column"
 
 
 class IntColumnSerializer(NoisyColumnSerializer):
     array_cls = NoisyIntArray
+    tag = "int_column"
 
 
 class BoolColumnSerializer(NoisyColumnSerializer):
     array_cls = NoisyBoolArray
+    tag = "bool_column"
 
 
 class RootSerializer(StructureSerializer):
@@ -236,7 +246,7 @@ class NoisyValueSerializer(RootSerializer):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.__name__,
+            "kind": cls.tag,
             "obs": obj._obs,
             "root": _node_name(obj._root),
         }
@@ -248,17 +258,22 @@ class NoisyValueSerializer(RootSerializer):
 
 class NoisyFloatSerializer(NoisyValueSerializer):
     matches_type = NoisyFloat
+    tag = "noisy_float"
 
 
 class NoisyIntSerializer(NoisyValueSerializer):
     matches_type = NoisyInt
+    tag = "noisy_int"
 
 
 class NoisyBoolSerializer(NoisyValueSerializer):
     matches_type = NoisyBool
+    tag = "noisy_bool"
 
 
 class ArraySerializer(RootSerializer):
+    tag = "array"
+
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, np.ndarray)
@@ -277,10 +292,10 @@ class ArraySerializer(RootSerializer):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.__name__,
+            "kind": cls.tag,
             "shape": list(obj.shape),
             "elements": [
-                {"kind": serializer_for_obj(v).__name__, "obs": v._obs, "root": _node_name(v._root)}
+                {"kind": serializer_for_obj(v).tag, "obs": v._obs, "root": _node_name(v._root)}
                 for v in obj.flat
             ],
         }
@@ -294,6 +309,8 @@ class ArraySerializer(RootSerializer):
 
 
 class DataFrameSerializer(RootSerializer):
+    tag = "dataframe"
+
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.DataFrame)
@@ -315,7 +332,7 @@ class DataFrameSerializer(RootSerializer):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.__name__,
+            "kind": cls.tag,
             "columns": {
                 col: serializer_for_obj(obj[col]).to_dict(obj[col]) for col in obj.columns
             },
@@ -331,6 +348,8 @@ class DataFrameSerializer(RootSerializer):
 
 
 class TupleSerializer(RootSerializer):
+    tag = "tuple"
+
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, tuple)
@@ -357,7 +376,7 @@ class TupleSerializer(RootSerializer):
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.__name__, "items": [cls._item_serializer(item).to_dict(item) for item in obj]}
+        return {"kind": cls.tag, "items": [cls._item_serializer(item).to_dict(item) for item in obj]}
 
     @classmethod
     def from_dict(cls, d, built):
