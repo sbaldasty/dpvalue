@@ -23,12 +23,12 @@ _SP_NAMESPACE = vars(sp)
 
 
 def container_from_json(accept, d, built):
-    cls = _KIND_BY_TAG[d["kind"]]
+    cls = kind_for_tag(d["kind"])
     util.require_subclass(accept, cls)
     return cls.from_dict(d, built)
 
 def node_from_json(d, deps, remap):
-    cls = _KIND_BY_TAG[d["kind"]]
+    cls = kind_for_tag(d["kind"])
     util.require_subclass(NodeUnit, cls)
     return cls.from_dict(d, deps, remap)
 
@@ -45,6 +45,15 @@ def _node_name(node):
 
 
 class Unit:
+    _kinds = {}
+
+    @classmethod
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for base in cls.__bases__:
+            Unit._kinds.pop(base.__name__, None)
+        Unit._kinds[cls.__name__] = cls
+
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, cls.matches_type)
@@ -52,6 +61,10 @@ class Unit:
     @classmethod
     def to_dict(cls, obj):
         raise NotImplementedError
+
+
+def kind_for_tag(tag):
+    return Unit._kinds[tag]
 
 
 class NodeUnit(Unit):
@@ -353,14 +366,8 @@ class TupleContainer(TopLevelUnit):
         )
 
 
-_KINDS = [FloatContainer, IntContainer, BoolContainer, ArrayContainer, TableContainer, TupleContainer,
-          FloatColumnContainer, IntColumnContainer, BoolColumnContainer, PlainColumnContainer,
-          LatentUnit, DerivedUnit, NormalUnit, BinomialUnit, DiscreteGaussianUnit]
-_KIND_BY_TAG = {k.__name__: k for k in _KINDS}
-
-
 def _kind_for(obj):
-    for kind in _KINDS:
+    for kind in Unit._kinds.values():
         if kind.matches(obj):
             return kind
     return None
