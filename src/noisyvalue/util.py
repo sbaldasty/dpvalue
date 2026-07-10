@@ -13,3 +13,8 @@ def as_tuple(xs, cls):
 
 def generator(rng):
     return rng if isinstance(rng, Generator) else np.random.default_rng(rng)
+
+def require_subclass(accept, cls):
+    if not issubclass(cls, accept):
+        raise TypeError(f"Expected {accept.__name__}, got {cls.__name__}")
+    return cls

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import sympy as sp
 
+from . import util
 from .consolidate import consolidate
 from .core import NoisyFloat, NoisyInt, NoisyBool
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
@@ -21,12 +22,20 @@ _NOISY_COLUMN_CLASSES = {
 _SP_NAMESPACE = vars(sp)
 
 
-def deserialize(d, built, accept):
+def container_from_json(accept, d, built):
     cls = _KIND_BY_TAG[d["kind"]]
-    if not issubclass(cls, accept):
-        raise TypeError(f"Expected {accept.__name__}, got {cls.__name__}")
+    util.require_subclass(accept, cls)
     return cls.from_dict(d, built)
 
+def node_from_json(d, deps, remap):
+    cls = _KIND_BY_TAG[d["kind"]]
+    util.require_subclass(NodeUnit, cls)
+    return cls.from_dict(d, deps, remap)
+
+def node_to_dict(node):
+    cls = _kind_for(node)
+    util.require_subclass(NodeUnit, cls)
+    return cls.to_dict(node)
 
 def _node_name(node):
     """Return a serialization name for a node that is stable within a save() call."""
@@ -42,10 +51,6 @@ class Unit:
 
     @classmethod
     def to_dict(cls, obj):
-        raise NotImplementedError
-
-    @classmethod
-    def from_dict(cls, d, built):
         raise NotImplementedError
 
 
@@ -82,8 +87,7 @@ class DerivedUnit(NodeUnit):
         return DerivedNode(
             remap(d["definition"]),
             constraints=[remap(c) for c in d["constraints"]],
-            deps=deps,
-        )
+            deps=deps)
 
 
 class NoiseUnit(NodeUnit):
@@ -111,24 +115,6 @@ class DiscreteGaussianUnit(NoiseUnit):
     matches_type = DiscreteGaussianNode
 
 
-_NODE_KINDS = [LatentUnit, DerivedUnit, NormalUnit, BinomialUnit, DiscreteGaussianUnit]
-_NODE_KIND_BY_TAG = {k.__name__: k for k in _NODE_KINDS}
-
-
-def _node_kind_for(obj):
-    for kind in _NODE_KINDS:
-        if kind.matches(obj):
-            return kind
-    return None
-
-
-def _node_to_dict(node):
-    kind = _node_kind_for(node)
-    if kind is None:
-        raise TypeError(f"Unknown Node type: {type(node)}")
-    return kind.to_dict(node)
-
-
 class Container(Unit):
     @classmethod
     def children(cls, obj):
@@ -138,6 +124,10 @@ class Container(Unit):
     @classmethod
     def rebuild(cls, obj, it):
         """An equivalent container with each leaf NoisyValue replaced by next(it)."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_dict(cls, d, built):
         raise NotImplementedError
 
 
@@ -217,7 +207,11 @@ class BoolColumnContainer(NoisyColumnContainer):
     array_cls = NoisyBoolArray
 
 
-class ValueContainer(Container):
+class TopLevelUnit(Container):
+    pass
+
+
+class ValueContainer(TopLevelUnit):
     @classmethod
     def children(cls, obj):
         return [obj]
@@ -251,7 +245,7 @@ class BoolContainer(ValueContainer):
     matches_type = NoisyBool
 
 
-class ArrayContainer(Container):
+class ArrayContainer(TopLevelUnit):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, np.ndarray)
@@ -282,11 +276,11 @@ class ArrayContainer(Container):
     def from_dict(cls, d, built):
         arr = np.empty(tuple(d["shape"]), dtype=object)
         for i, edict in enumerate(d["elements"]):
-            arr.flat[i] = deserialize(edict, built, accept=ValueContainer)
+            arr.flat[i] = container_from_json(ValueContainer, edict, built)
         return arr
 
 
-class TableContainer(Container):
+class TableContainer(TopLevelUnit):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.DataFrame)
@@ -317,13 +311,13 @@ class TableContainer(Container):
     @classmethod
     def from_dict(cls, d, built):
         columns = {
-            name: deserialize(col, built, accept=ColumnContainer)
+            name: container_from_json(ColumnContainer, col, built)
             for name, col in d["columns"].items()
         }
         return pd.DataFrame(columns)
 
 
-class TupleContainer(Container):
+class TupleContainer(TopLevelUnit):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, tuple)
@@ -355,12 +349,13 @@ class TupleContainer(Container):
     @classmethod
     def from_dict(cls, d, built):
         return tuple(
-            _KIND_BY_TAG[item["kind"]].from_dict(item, built) for item in d["items"]
+            container_from_json(TopLevelUnit, item, built) for item in d["items"]
         )
 
 
 _KINDS = [FloatContainer, IntContainer, BoolContainer, ArrayContainer, TableContainer, TupleContainer,
-          FloatColumnContainer, IntColumnContainer, BoolColumnContainer, PlainColumnContainer]
+          FloatColumnContainer, IntColumnContainer, BoolColumnContainer, PlainColumnContainer,
+          LatentUnit, DerivedUnit, NormalUnit, BinomialUnit, DiscreteGaussianUnit]
 _KIND_BY_TAG = {k.__name__: k for k in _KINDS}
 
 
@@ -392,14 +387,12 @@ def save(path, container):
     nodes = _collect_nodes(kind, container)
     doc = {
         "version": _VERSION,
-        "nodes": {name: _node_to_dict(node) for name, node in nodes.items()},
+        "nodes": {name: node_to_dict(node) for name, node in nodes.items()},
         "container": kind.to_dict(container),
     }
     with open(path, "w") as f:
         json.dump(doc, f, indent=2)
 
-
-# ── node deserialization ────────────────────────────────────────────────────────
 
 def _topo_sort(nodes_dict):
     visited = set()
@@ -432,15 +425,12 @@ def _load_nodes(nodes_dict):
 
     for old_name in order:
         nd = nodes_dict[old_name]
-        kind = _NODE_KIND_BY_TAG.get(nd["kind"])
-        if kind is None:
-            raise ValueError(f"Unknown node kind: {nd['kind']!r}")
         deps = [built[dep_name] for dep_name in nd.get("deps", [])]
 
         def remap(s, _map=name_map):
             return _parse_expr(s, _map)
 
-        node = kind.from_dict(nd, deps, remap)
+        node = node_from_json(nd, deps, remap)
         name_map[old_name] = node.expr
         built[old_name] = node
 
@@ -454,8 +444,4 @@ def load(path):
     if doc.get("version") != _VERSION:
         raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
     built = _load_nodes(doc["nodes"])
-    cdict = doc["container"]
-    kind = _KIND_BY_TAG.get(cdict.get("kind"))
-    if kind is None:
-        raise ValueError(f"Unknown container kind: {cdict.get('kind')!r}")
-    return kind.from_dict(cdict, built)
+    return container_from_json(TopLevelUnit, doc["container"], built)
