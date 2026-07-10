@@ -22,17 +22,12 @@ _NOISY_COLUMN_CLASSES = {
 _SP_NAMESPACE = vars(sp)
 
 
-def serializer_for_tag(tag):
-    return Serializer._kinds[tag]
-
 def container_from_json(accept, d, built):
-    cls = serializer_for_tag(d["kind"])
-    util.require_subclass(accept, cls)
+    cls = Serializer.for_tag(d["kind"])
     return cls.from_dict(d, built)
 
 def node_from_json(d, deps, remap):
-    cls = serializer_for_tag(d["kind"])
-    util.require_subclass(NodeSerializer, cls)
+    cls = Serializer.for_tag(d["kind"])
     return cls.from_dict(d, deps, remap)
 
 def node_to_dict(node):
@@ -48,14 +43,20 @@ def _node_name(node):
 
 
 class Serializer:
-    _kinds = {}
+    subclasses = {}
 
+    @classmethod
+    def for_tag(cls, tag):
+        result = cls.subclasses[tag]
+        util.require_subclass(cls, result)
+        return result
+    
     @classmethod
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         for base in cls.__bases__:
-            Serializer._kinds.pop(base.__name__, None)
-        Serializer._kinds[cls.__name__] = cls
+            Serializer.subclasses.pop(base.__name__, None)
+        Serializer.subclasses[cls.__name__] = cls
 
     @classmethod
     def matches(cls, obj):
@@ -223,7 +224,7 @@ class RootSerializer(StructureSerializer):
     pass
 
 
-class ValueSerializer(RootSerializer):
+class NoisyValueSerializer(RootSerializer):
     @classmethod
     def children(cls, obj):
         return [obj]
@@ -245,15 +246,15 @@ class ValueSerializer(RootSerializer):
         return cls.matches_type(d["obs"], built[d["root"]])
 
 
-class FloatValueSerializer(ValueSerializer):
+class NoisyFloatSerializer(NoisyValueSerializer):
     matches_type = NoisyFloat
 
 
-class IntValueSerializer(ValueSerializer):
+class NoisyIntSerializer(NoisyValueSerializer):
     matches_type = NoisyInt
 
 
-class BoolValueSerializer(ValueSerializer):
+class NoisyBoolSerializer(NoisyValueSerializer):
     matches_type = NoisyBool
 
 
@@ -288,11 +289,11 @@ class ArraySerializer(RootSerializer):
     def from_dict(cls, d, built):
         arr = np.empty(tuple(d["shape"]), dtype=object)
         for i, edict in enumerate(d["elements"]):
-            arr.flat[i] = container_from_json(ValueSerializer, edict, built)
+            arr.flat[i] = container_from_json(NoisyValueSerializer, edict, built)
         return arr
 
 
-class TableSerializer(RootSerializer):
+class DataFrameSerializer(RootSerializer):
     @classmethod
     def matches(cls, obj):
         return isinstance(obj, pd.DataFrame)
@@ -337,7 +338,7 @@ class TupleSerializer(RootSerializer):
     @classmethod
     def _item_serializer(cls, item):
         item_serializer = serializer_for_obj(item)
-        if item_serializer not in (FloatValueSerializer, IntValueSerializer, BoolValueSerializer, ArraySerializer, TableSerializer):
+        if item_serializer not in (NoisyFloatSerializer, NoisyIntSerializer, NoisyBoolSerializer, ArraySerializer, DataFrameSerializer):
             raise TypeError(
                 f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
             )
@@ -366,7 +367,7 @@ class TupleSerializer(RootSerializer):
 
 
 def serializer_for_obj(obj):
-    for serializer in Serializer._kinds.values():
+    for serializer in Serializer.subclasses.values():
         if serializer.matches(obj):
             return serializer
     return None
