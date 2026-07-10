@@ -1,0 +1,231 @@
+{
+  "version": 5,
+  "nodes": {
+    "derived_136312591044864": {
+      "kind": "derived",
+      "deps": [
+        "id_0"
+      ],
+      "definition": "Add(Float('420.62865110546699', precision=53), Mul(Integer(-1), Symbol('id_0')))",
+      "constraints": []
+    },
+    "id_0": {
+      "kind": "normal",
+      "deps": [],
+      "params": [
+        "Integer(0)",
+        "Float('5.0', precision=53)"
+      ]
+    },
+    "derived_136312591045008": {
+      "kind": "derived",
+      "deps": [
+        "id_3"
+      ],
+      "definition": "Add(Float('134.72792096032401', precision=53), Mul(Integer(-1), Symbol('id_3')))",
+      "constraints": []
+    },
+    "id_3": {
+      "kind": "normal",
+      "deps": [],
+      "params": [
+        "Integer(0)",
+        "Float('5.0', precision=53)"
+      ]
+    },
+    "derived_136312591045152": {
+      "kind": "derived",
+      "deps": [
+        "id_6"
+      ],
+      "definition": "Add(Float('217.94526690896799', precision=53), Mul(Integer(-1), Symbol('id_6')))",
+      "constraints": []
+    },
+    "id_6": {
+      "kind": "normal",
+      "deps": [],
+      "params": [
+        "Integer(0)",
+        "Float('5.0', precision=53)"
+      ]
+    },
+    "derived_136312599640016": {
+      "kind": "derived",
+      "deps": [
+        "id_9"
+      ],
+      "definition": "Add(Float('68.204595606925906', precision=53), Mul(Integer(-1), Symbol('id_9')))",
+      "constraints": []
+    },
+    "id_9": {
+      "kind": "normal",
+      "deps": [],
+      "params": [
+        "Integer(0)",
+        "Float('5.0', precision=53)"
+      ]
+    },
+    "derived_136312593329152": {
+      "kind": "derived",
+      "deps": [
+        "id_12"
+      ],
+      "definition": "Add(Float('67.741044236941505', precision=53), Mul(Integer(-1), Symbol('id_12')))",
+      "constraints": []
+    },
+    "id_12": {
+      "kind": "normal",
+      "deps": [],
+      "params": [
+        "Integer(0)",
+        "Float('5.0', precision=53)"
+      ]
+    },
+    "derived_136312599414544": {
+      "kind": "derived",
+      "deps": [
+        "id_17"
+      ],
+      "definition": "Symbol('id_17')",
+      "constraints": []
+    },
+    "id_17": {
+      "kind": "binomial",
+      "deps": [],
+      "params": [
+        "Integer(1000)",
+        "Float('0.40000000000000002', precision=53)"
+      ]
+    },
+    "derived_136312597207024": {
+      "kind": "derived",
+      "deps": [
+        "id_20"
+      ],
+      "definition": "Symbol('id_20')",
+      "constraints": []
+    },
+    "id_20": {
+      "kind": "binomial",
+      "deps": [],
+      "params": [
+        "Integer(1000)",
+        "Float('0.45000000000000001', precision=53)"
+      ]
+    },
+    "derived_136312603642768": {
+      "kind": "derived",
+      "deps": [
+        "id_23"
+      ],
+      "definition": "Symbol('id_23')",
+      "constraints": []
+    },
+    "id_23": {
+      "kind": "binomial",
+      "deps": [],
+      "params": [
+        "Integer(1000)",
+        "Float('0.5', precision=53)"
+      ]
+    },
+    "derived_136312596790832": {
+      "kind": "derived",
+      "deps": [
+        "id_26"
+      ],
+      "definition": "Symbol('id_26')",
+      "constraints": []
+    },
+    "id_26": {
+      "kind": "binomial",
+      "deps": [],
+      "params": [
+        "Integer(1000)",
+        "Float('0.55000000000000004', precision=53)"
+      ]
+    },
+    "derived_136312590756384": {
+      "kind": "derived",
+      "deps": [
+        "id_29"
+      ],
+      "definition": "Symbol('id_29')",
+      "constraints": []
+    },
+    "id_29": {
+      "kind": "binomial",
+      "deps": [],
+      "params": [
+        "Integer(1000)",
+        "Float('0.60000000000000009', precision=53)"
+      ]
+    }
+  },
+  "container": {
+    "kind": "dataframe",
+    "columns": {
+      "county": {
+        "kind": "plain_column",
+        "dtype": "str",
+        "values": [
+          "Wayne",
+          "Oakland",
+          "Macomb",
+          "Lapeer",
+          "Livingston"
+        ]
+      },
+      "black_pop": {
+        "kind": "float_column",
+        "elements": [
+          {
+            "obs": 420.628651105467,
+            "root": "derived_136312591044864"
+          },
+          {
+            "obs": 134.72792096032393,
+            "root": "derived_136312591045008"
+          },
+          {
+            "obs": 217.94526690896765,
+            "root": "derived_136312591045152"
+          },
+          {
+            "obs": 68.20459560692592,
+            "root": "derived_136312599640016"
+          },
+          {
+            "obs": 67.74104423694155,
+            "root": "derived_136312593329152"
+          }
+        ]
+      },
+      "total_pop": {
+        "kind": "int_column",
+        "elements": [
+          {
+            "obs": 400,
+            "root": "derived_136312599414544"
+          },
+          {
+            "obs": 430,
+            "root": "derived_136312597207024"
+          },
+          {
+            "obs": 460,
+            "root": "derived_136312603642768"
+          },
+          {
+            "obs": 490,
+            "root": "derived_136312596790832"
+          },
+          {
+            "obs": 520,
+            "root": "derived_136312590756384"
+          }
+        ]
+      }
+    }
+  }
+}

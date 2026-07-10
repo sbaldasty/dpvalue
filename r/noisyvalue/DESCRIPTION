@@ -1,0 +1,22 @@
+Package: noisyvalue
+Title: Tidy R Interface to the Python noisyvalue Library
+Version: 0.1.0
+Authors@R: person("Steven", "Baldasty", role = c("aut", "cre"))
+Description: Thin reticulate-based wrappers around the Python noisyvalue
+    library. Exposes NoisyValue-backed pandas DataFrame columns as
+    tibble-compatible R vectors, and forwards R arithmetic and comparison
+    operators straight through to the underlying Python objects so that
+    posterior/symbolic provenance is preserved through R code.
+License: MIT
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Depends: R (>= 4.1)
+Imports:
+    reticulate,
+    tibble,
+    vctrs
+Suggests:
+    dplyr,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Config/roxygen2/version: 8.0.0
