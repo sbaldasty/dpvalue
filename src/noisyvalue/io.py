@@ -6,6 +6,7 @@ import pandas as pd
 import sympy as sp
 
 from . import util
+from .analysis import NoisyContingencyTable
 from .consolidate import consolidate
 from .core import NoisyFloat, NoisyInt, NoisyBool
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
@@ -347,6 +348,30 @@ class DataFrameSerializer(RootSerializer):
         return pd.DataFrame(columns)
 
 
+class ContingencyTableSerializer(RootSerializer):
+    tag = "contingency_table"
+
+    @classmethod
+    def matches(cls, obj):
+        return isinstance(obj, NoisyContingencyTable)
+
+    @classmethod
+    def children(cls, obj):
+        return ArraySerializer.children(obj.tbl)
+
+    @classmethod
+    def rebuild(cls, obj, it):
+        return NoisyContingencyTable(ArraySerializer.rebuild(obj.tbl, it))
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"kind": cls.tag, "array": ArraySerializer.to_dict(obj.tbl)}
+
+    @classmethod
+    def from_dict(cls, d, built):
+        return NoisyContingencyTable(ArraySerializer.from_dict(d["array"], built))
+
+
 class TupleSerializer(RootSerializer):
     tag = "tuple"
 
@@ -357,10 +382,7 @@ class TupleSerializer(RootSerializer):
     @classmethod
     def _item_serializer(cls, item):
         item_serializer = serializer_for_obj(item)
-        if item_serializer not in (NoisyFloatSerializer, NoisyIntSerializer, NoisyBoolSerializer, ArraySerializer, DataFrameSerializer):
-            raise TypeError(
-                f"List/tuple items must be NoisyValue, ndarray, or DataFrame, got {type(item)}"
-            )
+        util.require_subclass(RootSerializer, item_serializer)
         return item_serializer
 
     @classmethod

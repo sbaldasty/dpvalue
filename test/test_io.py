@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 import conftest as noise
+from noisyvalue.analysis import NoisyContingencyTable
 from noisyvalue.core import (
     NoisyBool, NoisyFloat, NoisyInt,
     noisy_value_sampler, sample_noisy_values,
@@ -230,6 +231,44 @@ def test_table_nested_in_tuple_alongside_other_containers(tmp_path):
     assert isinstance(rt_v, NoisyFloat)
     assert isinstance(rt_df, pd.DataFrame)
     assert rt_df["value"].array[0]._obs == pytest.approx(9.0)
+
+
+# ── NoisyContingencyTable container ───────────────────────────────────────────
+
+def test_contingency_table_shape_and_obs_survive_roundtrip(tmp_path):
+    tbl = NoisyContingencyTable([[10, 20], [30, 40]])
+    rt = _roundtrip(tmp_path, tbl)
+    assert isinstance(rt, NoisyContingencyTable)
+    assert rt.tbl.shape == (2, 2)
+    assert [[float(v) for v in row] for row in rt.tbl] == [[10.0, 20.0], [30.0, 40.0]]
+
+
+def test_contingency_table_stratified_posterior_survives_roundtrip(tmp_path):
+    tbl = NoisyContingencyTable.stratified([[10, 20], [30, 40]])
+    rt = _roundtrip(tmp_path, tbl)
+    orig_ci = tbl.chi_squared().credible_interval(rng=0)
+    rt_ci = rt.chi_squared().credible_interval(rng=0)
+    assert orig_ci == pytest.approx(rt_ci, abs=2.0)
+
+
+def test_contingency_table_nested_in_tuple_alongside_other_containers(tmp_path):
+    v = NoisyFloat.draw(1.0, noise.gaussian(0, 1), rng=0)
+    tbl = NoisyContingencyTable([[1, 2], [3, 4]])
+    rt = _roundtrip(tmp_path, (v, tbl))
+    assert isinstance(rt, tuple)
+    rt_v, rt_tbl = rt
+    assert isinstance(rt_v, NoisyFloat)
+    assert isinstance(rt_tbl, NoisyContingencyTable)
+    assert float(rt_tbl.tbl[0, 0]) == pytest.approx(1.0)
+
+
+def test_contingency_table_kind_spot_check(tmp_path):
+    tbl = NoisyContingencyTable([[1, 2], [3, 4]])
+    p = tmp_path / "table.json"
+    save(p, tbl)
+    doc = json.loads(p.read_text())
+    assert doc["container"]["kind"] == "contingency_table"
+    assert doc["container"]["array"]["kind"] == "array"
 
 
 def test_table_kind_spot_check(tmp_path):
