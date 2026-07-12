@@ -1,5 +1,6 @@
 from .analysis import NoisyContingencyTable, noisy_max, noisy_min
 from .array import float_array_sampler, sample_float_array
+from .census import get_pl94, pl94_queries
 from .core import NoisyBool, NoisyFloat, NoisyInt, NoisyNumber, NoisyValue
 from .core import noisy_value_sampler, sample_noisy_values
 from .io import load, save
@@ -12,6 +13,8 @@ __all__ = [x.__name__ for x in [
     float_array_sampler, sample_float_array, noisy_value_sampler, sample_noisy_values,
     # Analysis
     NoisyContingencyTable, noisy_max, noisy_min,
+    # Census
+    get_pl94, pl94_queries,
     # IO
     load, save,
     # Visualization

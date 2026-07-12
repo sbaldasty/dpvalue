@@ -179,18 +179,26 @@ class NoisyValue:
         return out_cls(obs_op(self._obs), root)
 
     @classmethod
-    def draw(cls, true_value, noise_node, rng=None):
-        rng = util.generator(rng)
+    def observe(cls, obs, noise_node):
+        """Interpret an existing observation as unknown true value plus noise.
+
+        The returned value's posterior treats `obs` as a realization of
+        `theta + noise`, where `theta` is a latent true value with a flat
+        prior and `noise` is described by `noise_node`.
+        """
         theta_node = LatentNode()
         theta = theta_node.expr
-        noise_sym = noise_node.expr
-        obs_noise = noise_node.sample(rng)
-        obs = sympify(true_value) + obs_noise
         root = DerivedNode(
             theta,
-            constraints=(theta + noise_sym - obs,),
+            constraints=(theta + noise_node.expr - sympify(obs),),
             deps=(theta_node, noise_node))
         return cls(obs, root)
+
+    @classmethod
+    def draw(cls, true_value, noise_node, rng=None):
+        rng = util.generator(rng)
+        obs = sympify(true_value) + noise_node.sample(rng)
+        return cls.observe(obs, noise_node)
 
     @classmethod
     def lift(cls, value, accept=None):

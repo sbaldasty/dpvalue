@@ -219,6 +219,68 @@ class DiscreteGaussianNode(NoiseNode):
         return rng.choice(k_vals, size=size, p=pmf)
 
 
+class TruncatedDiscreteGaussianNode(NoiseNode):
+    loc = Parameter(0)
+    scale = Parameter(1)
+    low = Parameter(2)
+    high = Parameter(3)
+
+    def sympy_rv(self):
+        # Continuous Normal as quantile-space approximation for visualization.
+        # Truncation is not reflected here.
+        return Normal(Name.fresh(), self.loc, self.scale)
+
+    def sample(self, rng, size=None, resolved=()):
+        loc = float(self.loc.subs(resolved))
+        scale = float(self.scale.subs(resolved))
+        low = float(self.low.subs(resolved))
+        high = float(self.high.subs(resolved))
+        if not np.isfinite(loc) or not np.isfinite(scale) or scale <= 0 or low > high:
+            return np.nan if size is None else np.full(size, np.nan, dtype=float)
+        return self._draw(rng, loc, scale, low, high, size)
+
+    @classmethod
+    def sample_arrays(cls, rng, loc, scale, low, high):
+        loc = np.asarray(loc, dtype=float)
+        scale = np.asarray(scale, dtype=float)
+        low = np.asarray(low, dtype=float)
+        high = np.asarray(high, dtype=float)
+        n = loc.shape[0]
+        result = np.empty(n, dtype=float)
+        for i in range(n):
+            l, s = float(loc[i]), float(scale[i])
+            lo, hi = float(low[i]), float(high[i])
+            if not np.isfinite(l) or not np.isfinite(s) or s <= 0 or lo > hi:
+                result[i] = np.nan
+            else:
+                result[i] = float(cls._draw(rng, l, s, lo, hi))
+        return result
+
+    @classmethod
+    def _draw(cls, rng, loc, scale, low, high, size=None):
+        K = int(np.ceil(max(50.0, 6.0 * abs(scale))))
+        k_center = int(np.round(loc))
+        # Keep the grid centered near loc but inside the truncation window,
+        # so mass near the closer boundary is captured even when loc is far
+        # outside [low, high].
+        if np.isfinite(low):
+            k_center = max(k_center, int(np.ceil(low)))
+        if np.isfinite(high):
+            k_center = min(k_center, int(np.floor(high)))
+        lo = k_center - K
+        hi = k_center + K
+        if np.isfinite(low):
+            lo = max(lo, int(np.ceil(low)))
+        if np.isfinite(high):
+            hi = min(hi, int(np.floor(high)))
+        k_vals = np.arange(lo, hi + 1)
+        log_pmf = -0.5 * ((k_vals - loc) ** 2) / (scale ** 2)
+        log_pmf -= log_pmf.max()
+        pmf = np.exp(log_pmf)
+        pmf /= pmf.sum()
+        return rng.choice(k_vals, size=size, p=pmf)
+
+
 def topological_sort_law_nodes(law_nodes):
     law_symbols = {node.expr for node in law_nodes}
     by_symbol = {node.expr: node for node in law_nodes}

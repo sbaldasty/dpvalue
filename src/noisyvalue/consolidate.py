@@ -1,5 +1,6 @@
 import sympy as sp
 from . import util
+from collections import Counter
 from sympy import sympify
 
 from .core import (
@@ -116,13 +117,20 @@ def consolidate(*values, rules=None):
 
     # A noise symbol is eligible for combination only if it appears exactly once
     # across the joint expression, ensuring no cross-value correlation is broken.
+    # Occurrences are tallied in one traversal; per-symbol joint.count() calls
+    # are quadratic in the number of values.
     joint = sp.Tuple(*resolved_exprs)
+    occurrences = Counter(
+        sub
+        for sub in sp.preorder_traversal(joint)
+        if isinstance(sub, sp.Symbol)
+    )
     eligible = {
         expr
         for expr, node in symbol_to_node.items()
         if isinstance(node, NoiseNode)
         and not node.deps
-        and joint.count(expr) == 1
+        and occurrences.get(expr, 0) == 1
         and expr not in law_param_symbols
     }
 
