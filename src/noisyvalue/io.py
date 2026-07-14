@@ -17,26 +17,6 @@ VERSION = 5
 _SP_NAMESPACE = vars(sp)
 
 
-def container_from_json(accept, d, built):
-    cls = Serializer.for_tag(d["kind"])
-    return cls.from_dict(d, built)
-
-def node_from_json(d, deps, remap):
-    cls = Serializer.for_tag(d["kind"])
-    return cls.from_dict(d, deps, remap)
-
-def node_to_dict(node):
-    cls = serializer_for_obj(node)
-    util.require_subclass(NodeSerializer, cls)
-    return cls.to_dict(node)
-
-def _node_name(node):
-    """Return a serialization name for a node that is stable within a save() call."""
-    if isinstance(node, DerivedNode):
-        return f"derived_{id(node)}"
-    return str(node.expr)
-
-
 class Serializer:
     subclasses = {}
     tag = None
@@ -387,21 +367,30 @@ class TupleSerializer(ContainerSerializer):
         )
 
 
+def container_from_json(accept, d, built):
+    cls = Serializer.for_tag(d["kind"])
+    return cls.from_dict(d, built)
+
+def node_from_json(d, deps, remap):
+    cls = Serializer.for_tag(d["kind"])
+    return cls.from_dict(d, deps, remap)
+
+def node_to_dict(node):
+    cls = serializer_for_obj(node)
+    util.require_subclass(NodeSerializer, cls)
+    return cls.to_dict(node)
+
+def _node_name(node):
+    """Return a serialization name for a node that is stable within a save() call."""
+    if isinstance(node, DerivedNode):
+        return f"derived_{id(node)}"
+    return str(node.expr)
+
 def serializer_for_obj(obj):
     for serializer in Serializer.subclasses.values():
         if serializer.matches(obj):
             return serializer
     return None
-
-
-def _collect_nodes(serializer, container):
-    nodes = {}
-    for v in serializer.children(container):
-        for node in v._root.closure():
-            name = _node_name(node)
-            if name not in nodes:
-                nodes[name] = node
-    return nodes
 
 
 def save(path, container):
@@ -412,7 +401,14 @@ def save(path, container):
     flat = serializer.children(container)
     consolidated = consolidate(*flat)
     container = serializer.rebuild(container, iter(consolidated))
-    nodes = _collect_nodes(serializer, container)
+
+    nodes = {}
+    for v in serializer.children(container):
+        for node in v._root.closure():
+            name = _node_name(node)
+            if name not in nodes:
+                nodes[name] = node
+
     doc = {
         "version": VERSION,
         "nodes": {name: node_to_dict(node) for name, node in nodes.items()},
@@ -439,13 +435,6 @@ def _topo_sort(nodes_dict):
     return order
 
 
-def _parse_expr(s, name_map):
-    expr = eval(s, _SP_NAMESPACE)  # noqa: S307 — we wrote the file
-    for old, new_sym in name_map.items():
-        expr = expr.subs(sp.Symbol(old), new_sym)
-    return expr
-
-
 def load(path):
     """Load a container saved by save()."""
     with open(path) as f:
@@ -463,7 +452,10 @@ def load(path):
         deps = [built[dep_name] for dep_name in nd.get("deps", [])]
 
         def remap(s, _map=name_map):
-            return _parse_expr(s, _map)
+            expr = eval(s, _SP_NAMESPACE)  # noqa: S307 — we wrote the file
+            for old, new_sym in _map.items():
+                expr = expr.subs(sp.Symbol(old), new_sym)
+            return expr
 
         node = node_from_json(nd, deps, remap)
         name_map[old_name] = node.expr
