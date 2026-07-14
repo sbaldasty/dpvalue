@@ -287,10 +287,7 @@ class ArraySerializer(ContainerSerializer):
         return {
             "kind": cls.tag,
             "shape": list(obj.shape),
-            "elements": [
-                {"kind": serializer_for_obj(v).tag, "obs": v._obs, "root": _node_name(v._root)}
-                for v in obj.flat
-            ],
+            "elements": [serializer_for_obj(v).to_dict(v) for v in obj.flat],
         }
 
     @classmethod
