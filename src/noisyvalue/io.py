@@ -73,8 +73,8 @@ class NodeSerializer(Serializer):
 
 
 class LatentNodeSerializer(NodeSerializer):
-    matches_type = LatentNode
     tag = "latent"
+    matches_type = LatentNode
 
     @classmethod
     def from_dict(cls, d, deps, remap):
@@ -82,8 +82,8 @@ class LatentNodeSerializer(NodeSerializer):
 
 
 class DerivedNodeSerializer(NodeSerializer):
-    matches_type = DerivedNode
     tag = "derived"
+    matches_type = DerivedNode
 
     @classmethod
     def to_dict(cls, node):
@@ -114,18 +114,18 @@ class NoiseNodeSerializer(NodeSerializer):
 
 
 class NormalNodeSerializer(NoiseNodeSerializer):
-    matches_type = NormalNode
     tag = "normal"
+    matches_type = NormalNode
 
 
 class BinomialNodeSerializer(NoiseNodeSerializer):
-    matches_type = BinomialNode
     tag = "binomial"
+    matches_type = BinomialNode
 
 
 class DiscreteGaussianNodeSerializer(NoiseNodeSerializer):
-    matches_type = DiscreteGaussianNode
     tag = "discrete_gaussian"
+    matches_type = DiscreteGaussianNode
 
 
 class ContainerSerializer(Serializer):
@@ -253,26 +253,23 @@ class NoisyValueSerializer(ContainerSerializer):
 
 
 class NoisyFloatSerializer(NoisyValueSerializer):
-    matches_type = NoisyFloat
     tag = "noisy_float"
+    matches_type = NoisyFloat
 
 
 class NoisyIntSerializer(NoisyValueSerializer):
-    matches_type = NoisyInt
     tag = "noisy_int"
+    matches_type = NoisyInt
 
 
 class NoisyBoolSerializer(NoisyValueSerializer):
-    matches_type = NoisyBool
     tag = "noisy_bool"
+    matches_type = NoisyBool
 
 
 class ArraySerializer(ContainerSerializer):
     tag = "array"
-
-    @classmethod
-    def matches(cls, obj):
-        return isinstance(obj, np.ndarray)
+    matches_type = np.ndarray
 
     @classmethod
     def children(cls, obj):
@@ -306,10 +303,7 @@ class ArraySerializer(ContainerSerializer):
 
 class DataFrameSerializer(ContainerSerializer):
     tag = "dataframe"
-
-    @classmethod
-    def matches(cls, obj):
-        return isinstance(obj, pd.DataFrame)
+    matches_type = pd.DataFrame
 
     @classmethod
     def children(cls, obj):
@@ -345,10 +339,7 @@ class DataFrameSerializer(ContainerSerializer):
 
 class ContingencyTableSerializer(ContainerSerializer):
     tag = "contingency_table"
-
-    @classmethod
-    def matches(cls, obj):
-        return isinstance(obj, NoisyContingencyTable)
+    matches_type = NoisyContingencyTable
 
     @classmethod
     def children(cls, obj):
@@ -369,10 +360,7 @@ class ContingencyTableSerializer(ContainerSerializer):
 
 class TupleSerializer(ContainerSerializer):
     tag = "tuple"
-
-    @classmethod
-    def matches(cls, obj):
-        return isinstance(obj, tuple)
+    matches_type = tuple
 
     @classmethod
     def _item_serializer(cls, item):
