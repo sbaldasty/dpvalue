@@ -461,10 +461,17 @@ def _parse_expr(s, name_map):
     return expr
 
 
-def _load_nodes(nodes_dict):
+def load(path):
+    """Load a container saved by save()."""
+    with open(path) as f:
+        doc = json.load(f)
+    if doc.get("version") != VERSION:
+        raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
+
+    nodes_dict = doc["nodes"]
     order = _topo_sort(nodes_dict)
     name_map = {}  # old symbol name str -> new Symbol
-    built = {}     # old symbol name str -> Node
+    built = {}  # old symbol name str -> Node
 
     for old_name in order:
         nd = nodes_dict[old_name]
@@ -477,14 +484,4 @@ def _load_nodes(nodes_dict):
         name_map[old_name] = node.expr
         built[old_name] = node
 
-    return built
-
-
-def load(path):
-    """Load a container saved by save()."""
-    with open(path) as f:
-        doc = json.load(f)
-    if doc.get("version") != VERSION:
-        raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
-    built = _load_nodes(doc["nodes"])
     return container_from_json(ContainerSerializer, doc["container"], built)
