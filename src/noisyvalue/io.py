@@ -12,13 +12,7 @@ from .core import NoisyFloat, NoisyInt, NoisyBool
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
-_VERSION = 5
-
-_NOISY_COLUMN_CLASSES = {
-    "noisyfloat": NoisyFloatArray,
-    "noisyint": NoisyIntArray,
-    "noisybool": NoisyBoolArray,
-}
+VERSION = 5
 
 _SP_NAMESPACE = vars(sp)
 
@@ -134,7 +128,7 @@ class DiscreteGaussianNodeSerializer(NoiseNodeSerializer):
     tag = "discrete_gaussian"
 
 
-class StructureSerializer(Serializer):
+class ContainerSerializer(Serializer):
     @classmethod
     def children(cls, obj):
         """NoisyValue leaves contained in obj, in the order rebuild()/to_dict() expect."""
@@ -150,16 +144,16 @@ class StructureSerializer(Serializer):
         raise NotImplementedError
 
 
-class ColumnSerializer(StructureSerializer):
-    pass
+class SeriesSerializer(ContainerSerializer):
+    array_classes = []
 
 
-class PlainColumnSerializer(ColumnSerializer):
-    tag = "plain_column"
+class PlainSeriesSerializer(SeriesSerializer):
+    tag = "plain_series"
 
     @classmethod
     def matches(cls, obj):
-        return isinstance(obj, pd.Series) and type(obj.array) not in _NOISY_COLUMN_CLASSES.values()
+        return isinstance(obj, pd.Series) and type(obj.array) not in SeriesSerializer.array_classes
 
     @classmethod
     def children(cls, obj):
@@ -178,8 +172,13 @@ class PlainColumnSerializer(ColumnSerializer):
         return pd.Series(d["values"], dtype=d["dtype"])
 
 
-class NoisyColumnSerializer(ColumnSerializer):
+class NoisySeriesSerializer(SeriesSerializer):
     array_cls = None
+
+    @classmethod
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.array_classes.append(cls.array_cls)
 
     @classmethod
     def matches(cls, obj):
@@ -216,26 +215,22 @@ class NoisyColumnSerializer(ColumnSerializer):
         return pd.Series(cls.array_cls._from_sequence(values))
 
 
-class FloatColumnSerializer(NoisyColumnSerializer):
+class FloatSeriesSerializer(NoisySeriesSerializer):
     array_cls = NoisyFloatArray
-    tag = "float_column"
+    tag = "float_series"
 
 
-class IntColumnSerializer(NoisyColumnSerializer):
+class IntSeriesSerializer(NoisySeriesSerializer):
     array_cls = NoisyIntArray
-    tag = "int_column"
+    tag = "int_series"
 
 
-class BoolColumnSerializer(NoisyColumnSerializer):
+class BoolSeriesSerializer(NoisySeriesSerializer):
     array_cls = NoisyBoolArray
-    tag = "bool_column"
+    tag = "bool_series"
 
 
-class RootSerializer(StructureSerializer):
-    pass
-
-
-class NoisyValueSerializer(RootSerializer):
+class NoisyValueSerializer(ContainerSerializer):
     @classmethod
     def children(cls, obj):
         return [obj]
@@ -272,7 +267,7 @@ class NoisyBoolSerializer(NoisyValueSerializer):
     tag = "noisy_bool"
 
 
-class ArraySerializer(RootSerializer):
+class ArraySerializer(ContainerSerializer):
     tag = "array"
 
     @classmethod
@@ -309,7 +304,7 @@ class ArraySerializer(RootSerializer):
         return arr
 
 
-class DataFrameSerializer(RootSerializer):
+class DataFrameSerializer(ContainerSerializer):
     tag = "dataframe"
 
     @classmethod
@@ -342,13 +337,13 @@ class DataFrameSerializer(RootSerializer):
     @classmethod
     def from_dict(cls, d, built):
         columns = {
-            name: container_from_json(ColumnSerializer, col, built)
+            name: container_from_json(SeriesSerializer, col, built)
             for name, col in d["columns"].items()
         }
         return pd.DataFrame(columns)
 
 
-class ContingencyTableSerializer(RootSerializer):
+class ContingencyTableSerializer(ContainerSerializer):
     tag = "contingency_table"
 
     @classmethod
@@ -372,7 +367,7 @@ class ContingencyTableSerializer(RootSerializer):
         return NoisyContingencyTable(ArraySerializer.from_dict(d["array"], built))
 
 
-class TupleSerializer(RootSerializer):
+class TupleSerializer(ContainerSerializer):
     tag = "tuple"
 
     @classmethod
@@ -382,7 +377,7 @@ class TupleSerializer(RootSerializer):
     @classmethod
     def _item_serializer(cls, item):
         item_serializer = serializer_for_obj(item)
-        util.require_subclass(RootSerializer, item_serializer)
+        util.require_subclass(ContainerSerializer, item_serializer)
         return item_serializer
 
     @classmethod
@@ -403,7 +398,7 @@ class TupleSerializer(RootSerializer):
     @classmethod
     def from_dict(cls, d, built):
         return tuple(
-            container_from_json(RootSerializer, item, built) for item in d["items"]
+            container_from_json(ContainerSerializer, item, built) for item in d["items"]
         )
 
 
@@ -434,7 +429,7 @@ def save(path, container):
     container = serializer.rebuild(container, iter(consolidated))
     nodes = _collect_nodes(serializer, container)
     doc = {
-        "version": _VERSION,
+        "version": VERSION,
         "nodes": {name: node_to_dict(node) for name, node in nodes.items()},
         "container": serializer.to_dict(container),
     }
@@ -489,7 +484,7 @@ def load(path):
     """Load a container saved by save()."""
     with open(path) as f:
         doc = json.load(f)
-    if doc.get("version") != _VERSION:
+    if doc.get("version") != VERSION:
         raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
     built = _load_nodes(doc["nodes"])
-    return container_from_json(RootSerializer, doc["container"], built)
+    return container_from_json(ContainerSerializer, doc["container"], built)

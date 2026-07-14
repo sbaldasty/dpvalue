@@ -280,5 +280,5 @@ def test_table_kind_spot_check(tmp_path):
     save(p, df)
     doc = json.loads(p.read_text())
     assert doc["container"]["kind"] == "dataframe"
-    assert doc["container"]["columns"]["label"]["kind"] == "plain_column"
-    assert doc["container"]["columns"]["value"]["kind"] == "float_column"
+    assert doc["container"]["columns"]["label"]["kind"] == "plain_series"
+    assert doc["container"]["columns"]["value"]["kind"] == "float_series"
