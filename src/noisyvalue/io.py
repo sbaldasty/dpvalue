@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 import sympy as sp
 
+from sympy.functions.elementary.piecewise import ExprCondPair
+from sympy.logic.boolalg import BooleanAtom
+
 from . import util
 from .analysis import NoisyContingencyTable
 from .consolidate import consolidate
@@ -12,9 +15,69 @@ from .core import NoisyFloat, NoisyInt, NoisyBool
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
-VERSION = 5
+VERSION = 6
 
-_SP_NAMESPACE = vars(sp)
+# The closed set of compound expression types this library ever builds (see
+# core.py's bin_op/unary_op/guarded). Deserialization only ever instantiates
+# classes from this table -- never eval()s attacker-controlled text -- so a
+# maliciously crafted file cannot reach arbitrary Python execution.
+_EXPR_CLASSES = {
+    cls.__name__: cls
+    for cls in (
+        sp.Add, sp.Mul, sp.Pow,
+        sp.exp, sp.log, sp.floor, sp.Abs,
+        sp.Piecewise, ExprCondPair,
+        sp.And, sp.Or, sp.Not,
+        sp.Eq, sp.Ne,
+        sp.core.relational.StrictLessThan, sp.core.relational.LessThan,
+        sp.core.relational.StrictGreaterThan, sp.core.relational.GreaterThan,
+    )
+}
+
+
+def expr_to_dict(expr):
+    """Serialize a SymPy expression to a JSON-safe structural tree."""
+    expr = sp.sympify(expr)
+    if isinstance(expr, sp.Symbol):
+        return {"tag": "Symbol", "name": expr.name}
+    if isinstance(expr, sp.core.numbers.NaN):
+        return {"tag": "NaN"}
+    if isinstance(expr, BooleanAtom):
+        return {"tag": "Boolean", "value": bool(expr)}
+    if isinstance(expr, sp.Float):
+        return {"tag": "Float", "value": repr(float(expr)), "precision": expr._prec}
+    if isinstance(expr, sp.Rational):
+        return {"tag": "Rational", "p": int(expr.p), "q": int(expr.q)}
+    cls_name = type(expr).__name__
+    if cls_name not in _EXPR_CLASSES:
+        raise TypeError(f"Cannot serialize expression of type {cls_name!r}: {expr!r}")
+    return {"tag": cls_name, "args": [expr_to_dict(a) for a in expr.args]}
+
+
+def expr_from_dict(d, name_map):
+    """Reconstruct a SymPy expression from expr_to_dict() output.
+
+    `name_map` maps old symbol name -> already-rebuilt expression, so shared
+    symbols resolve to the same (possibly freshly renamed) node.
+    """
+    tag = d["tag"]
+    if tag == "Symbol":
+        if d["name"] not in name_map:
+            raise ValueError(f"Unresolved symbol in serialized expression: {d['name']!r}")
+        return name_map[d["name"]]
+    if tag == "NaN":
+        return sp.nan
+    if tag == "Boolean":
+        return sp.true if d["value"] else sp.false
+    if tag == "Float":
+        return sp.Float(d["value"], precision=d["precision"])
+    if tag == "Rational":
+        return sp.Rational(d["p"], d["q"])
+    if tag not in _EXPR_CLASSES:
+        raise ValueError(f"Unknown or disallowed expression type in file: {tag!r}")
+    cls = _EXPR_CLASSES[tag]
+    args = [expr_from_dict(a, name_map) for a in d["args"]]
+    return cls(*args)
 
 
 class Serializer:
@@ -48,7 +111,7 @@ class NodeSerializer(Serializer):
         return {"kind": cls.tag, "deps": [_node_name(dep) for dep in node.deps]}
 
     @classmethod
-    def from_dict(cls, d, deps, remap):
+    def from_dict(cls, d, deps, name_map):
         raise NotImplementedError
 
 
@@ -57,7 +120,7 @@ class LatentNodeSerializer(NodeSerializer):
     matches_type = LatentNode
 
     @classmethod
-    def from_dict(cls, d, deps, remap):
+    def from_dict(cls, d, deps, name_map):
         return LatentNode()
 
 
@@ -68,15 +131,15 @@ class DerivedNodeSerializer(NodeSerializer):
     @classmethod
     def to_dict(cls, node):
         d = super().to_dict(node)
-        d["definition"] = sp.srepr(node.expr)
-        d["constraints"] = [sp.srepr(c) for c in node.constraints]
+        d["definition"] = expr_to_dict(node.expr)
+        d["constraints"] = [expr_to_dict(c) for c in node.constraints]
         return d
 
     @classmethod
-    def from_dict(cls, d, deps, remap):
+    def from_dict(cls, d, deps, name_map):
         return DerivedNode(
-            remap(d["definition"]),
-            constraints=[remap(c) for c in d["constraints"]],
+            expr_from_dict(d["definition"], name_map),
+            constraints=[expr_from_dict(c, name_map) for c in d["constraints"]],
             deps=deps)
 
 
@@ -84,12 +147,12 @@ class NoiseNodeSerializer(NodeSerializer):
     @classmethod
     def to_dict(cls, node):
         d = super().to_dict(node)
-        d["params"] = [sp.srepr(p) for p in node.params]
+        d["params"] = [expr_to_dict(p) for p in node.params]
         return d
 
     @classmethod
-    def from_dict(cls, d, deps, remap):
-        params = [remap(p) for p in d["params"]]
+    def from_dict(cls, d, deps, name_map):
+        params = [expr_from_dict(p, name_map) for p in d["params"]]
         return cls.matches_type(params, deps)
 
 
@@ -371,9 +434,9 @@ def container_from_json(accept, d, built):
     cls = Serializer.for_tag(d["kind"])
     return cls.from_dict(d, built)
 
-def node_from_json(d, deps, remap):
+def node_from_json(d, deps, name_map):
     cls = Serializer.for_tag(d["kind"])
-    return cls.from_dict(d, deps, remap)
+    return cls.from_dict(d, deps, name_map)
 
 def node_to_dict(node):
     cls = serializer_for_obj(node)
@@ -451,13 +514,7 @@ def load(path):
         nd = nodes_dict[old_name]
         deps = [built[dep_name] for dep_name in nd.get("deps", [])]
 
-        def remap(s, _map=name_map):
-            expr = eval(s, _SP_NAMESPACE)  # noqa: S307 — we wrote the file
-            for old, new_sym in _map.items():
-                expr = expr.subs(sp.Symbol(old), new_sym)
-            return expr
-
-        node = node_from_json(nd, deps, remap)
+        node = node_from_json(nd, deps, name_map)
         name_map[old_name] = node.expr
         built[old_name] = node
 
