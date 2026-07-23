@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import sympy as sp
 
+from sympy import Abs, Add, And, Eq, Mul, Ne, Not, Or, Pow, Piecewise, Symbol, exp, log, floor
+from sympy.core.relational import GreaterThan, LessThan, StrictGreaterThan, StrictLessThan
 from sympy.functions.elementary.piecewise import ExprCondPair
 from sympy.logic.boolalg import BooleanAtom
 
@@ -15,80 +17,13 @@ from .core import NoisyFloat, NoisyInt, NoisyBool
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
+
 VERSION = 6
-
-# The closed set of compound expression types this library ever builds (see
-# core.py's bin_op/unary_op/guarded). Deserialization only ever instantiates
-# classes from this table -- never eval()s attacker-controlled text -- so a
-# maliciously crafted file cannot reach arbitrary Python execution.
-_EXPR_CLASSES = {
-    cls.__name__: cls
-    for cls in (
-        sp.Add, sp.Mul, sp.Pow,
-        sp.exp, sp.log, sp.floor, sp.Abs,
-        sp.Piecewise, ExprCondPair,
-        sp.And, sp.Or, sp.Not,
-        sp.Eq, sp.Ne,
-        sp.core.relational.StrictLessThan, sp.core.relational.LessThan,
-        sp.core.relational.StrictGreaterThan, sp.core.relational.GreaterThan,
-    )
-}
-
-
-def expr_to_dict(expr):
-    """Serialize a SymPy expression to a JSON-safe structural tree."""
-    expr = sp.sympify(expr)
-    if isinstance(expr, sp.Symbol):
-        return {"tag": "Symbol", "name": expr.name}
-    if isinstance(expr, sp.core.numbers.NaN):
-        return {"tag": "NaN"}
-    if isinstance(expr, BooleanAtom):
-        return {"tag": "Boolean", "value": bool(expr)}
-    if isinstance(expr, sp.Float):
-        return {"tag": "Float", "value": repr(float(expr)), "precision": expr._prec}
-    if isinstance(expr, sp.Rational):
-        return {"tag": "Rational", "p": int(expr.p), "q": int(expr.q)}
-    cls_name = type(expr).__name__
-    if cls_name not in _EXPR_CLASSES:
-        raise TypeError(f"Cannot serialize expression of type {cls_name!r}: {expr!r}")
-    return {"tag": cls_name, "args": [expr_to_dict(a) for a in expr.args]}
-
-
-def expr_from_dict(d, name_map):
-    """Reconstruct a SymPy expression from expr_to_dict() output.
-
-    `name_map` maps old symbol name -> already-rebuilt expression, so shared
-    symbols resolve to the same (possibly freshly renamed) node.
-    """
-    tag = d["tag"]
-    if tag == "Symbol":
-        if d["name"] not in name_map:
-            raise ValueError(f"Unresolved symbol in serialized expression: {d['name']!r}")
-        return name_map[d["name"]]
-    if tag == "NaN":
-        return sp.nan
-    if tag == "Boolean":
-        return sp.true if d["value"] else sp.false
-    if tag == "Float":
-        return sp.Float(d["value"], precision=d["precision"])
-    if tag == "Rational":
-        return sp.Rational(d["p"], d["q"])
-    if tag not in _EXPR_CLASSES:
-        raise ValueError(f"Unknown or disallowed expression type in file: {tag!r}")
-    cls = _EXPR_CLASSES[tag]
-    args = [expr_from_dict(a, name_map) for a in d["args"]]
-    return cls(*args)
 
 
 class Serializer:
     subclasses = {}
     tag = None
-
-    @classmethod
-    def for_tag(cls, tag):
-        result = cls.subclasses[tag]
-        util.require_subclass(cls, result)
-        return result
 
     @classmethod
     def __init_subclass__(cls, **kwargs):
@@ -103,6 +38,190 @@ class Serializer:
     @classmethod
     def to_dict(cls, obj):
         raise NotImplementedError
+
+
+# ----------------------------------------------------------------------------
+# SymPy serializers
+# ----------------------------------------------------------------------------
+
+
+class SympySerializer(Serializer):
+    @classmethod
+    def from_dict(cls, d, name_map):
+        raise NotImplementedError
+
+
+class SympySymbolSerializer(SympySerializer):
+    tag = "Symbol"
+    matches_type = Symbol
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag, "name": obj.name}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        if d["name"] not in name_map:
+            raise ValueError(f"Unresolved symbol in serialized expression: {d['name']!r}")
+        return name_map[d["name"]]
+
+
+class SympyNaNSerializer(SympySerializer):
+    tag = "NaN"
+    matches_type = sp.core.numbers.NaN
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        return sp.nan
+
+
+class SympyBooleanSerializer(SympySerializer):
+    tag = "Boolean"
+    matches_type = BooleanAtom
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag, "value": bool(obj)}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        return sp.true if d["value"] else sp.false
+
+
+class SympyFloatSerializer(SympySerializer):
+    tag = "Float"
+    matches_type = sp.Float
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag, "value": repr(float(obj)), "precision": obj._prec}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        return sp.Float(d["value"], precision=d["precision"])
+
+
+class SympyRationalSerializer(SympySerializer):
+    tag = "Rational"
+    matches_type = sp.Rational
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag, "p": int(obj.p), "q": int(obj.q)}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        return sp.Rational(d["p"], d["q"])
+
+
+class SympyExprSerializer(SympySerializer):
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag, "args": [expr_to_dict(a) for a in obj.args]}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        args = [expr_from_dict(a, name_map) for a in d["args"]]
+        return cls.matches_type(*args)
+
+
+class SympyAbsSerializer(SympyExprSerializer):
+    matches_type = Abs
+    tag = "Abs"
+
+
+class SympyAddSerializer(SympyExprSerializer):
+    matches_type = Add
+    tag = "Add"
+
+
+class SympyMulSerializer(SympyExprSerializer):
+    matches_type = Mul
+    tag = "Mul"
+
+
+class SympyPowSerializer(SympyExprSerializer):
+    matches_type = Pow
+    tag = "Pow"
+
+
+class SympyExpSerializer(SympyExprSerializer):
+    matches_type = exp
+    tag = "exp"
+
+
+class SympyLogSerializer(SympyExprSerializer):
+    matches_type = log
+    tag = "log"
+
+
+class SympyFloorSerializer(SympyExprSerializer):
+    matches_type = floor
+    tag = "floor"
+
+
+class SympyPiecewiseSerializer(SympyExprSerializer):
+    matches_type = Piecewise
+    tag = "Piecewise"
+
+
+class SympyExprCondPairSerializer(SympyExprSerializer):
+    matches_type = ExprCondPair
+    tag = "ExprCondPair"
+
+
+class SympyAndSerializer(SympyExprSerializer):
+    matches_type = And
+    tag = "And"
+
+
+class SympyOrSerializer(SympyExprSerializer):
+    matches_type = Or
+    tag = "Or"
+
+
+class SympyNotSerializer(SympyExprSerializer):
+    matches_type = Not
+    tag = "Not"
+
+
+class SympyEqSerializer(SympyExprSerializer):
+    matches_type = Eq
+    tag = "Eq"
+
+
+class SympyNeSerializer(SympyExprSerializer):
+    matches_type = Ne
+    tag = "Ne"
+
+
+class SympyStrictLessThanSerializer(SympyExprSerializer):
+    matches_type = StrictLessThan
+    tag = "StrictLessThan"
+
+
+class SympyLessThanSerializer(SympyExprSerializer):
+    matches_type = LessThan
+    tag = "LessThan"
+
+
+class SympyStrictGreaterThanSerializer(SympyExprSerializer):
+    matches_type = StrictGreaterThan
+    tag = "StrictGreaterThan"
+
+
+class SympyGreaterThanSerializer(SympyExprSerializer):
+    matches_type = GreaterThan
+    tag = "GreaterThan"
+
+
+# ----------------------------------------------------------------------------
+# Node serializers
+# ----------------------------------------------------------------------------
 
 
 class NodeSerializer(Serializer):
@@ -169,6 +288,11 @@ class BinomialNodeSerializer(NoiseNodeSerializer):
 class DiscreteGaussianNodeSerializer(NoiseNodeSerializer):
     tag = "discrete_gaussian"
     matches_type = DiscreteGaussianNode
+
+
+# ----------------------------------------------------------------------------
+# Container serializers
+# ----------------------------------------------------------------------------
 
 
 class ContainerSerializer(Serializer):
@@ -330,7 +454,7 @@ class ArraySerializer(ContainerSerializer):
         return {
             "kind": cls.tag,
             "shape": list(obj.shape),
-            "elements": [serializer_for_obj(v).to_dict(v) for v in obj.flat],
+            "elements": [serializer_for_obj(v, accept=NoisyValueSerializer).to_dict(v) for v in obj.flat]
         }
 
     @classmethod
@@ -349,13 +473,13 @@ class DataFrameSerializer(ContainerSerializer):
     def children(cls, obj):
         flat = []
         for col in obj.columns:
-            flat.extend(serializer_for_obj(obj[col]).children(obj[col]))
+            flat.extend(serializer_for_obj(obj[col], accept=SeriesSerializer).children(obj[col]))
         return flat
 
     @classmethod
     def rebuild(cls, obj, it):
         columns = {
-            col: serializer_for_obj(obj[col]).rebuild(obj[col], it) for col in obj.columns
+            col: serializer_for_obj(obj[col], accept=SeriesSerializer).rebuild(obj[col], it) for col in obj.columns
         }
         return pd.DataFrame(columns, index=obj.index)
 
@@ -364,7 +488,7 @@ class DataFrameSerializer(ContainerSerializer):
         return {
             "kind": cls.tag,
             "columns": {
-                col: serializer_for_obj(obj[col]).to_dict(obj[col]) for col in obj.columns
+                col: serializer_for_obj(obj[col], accept=SeriesSerializer).to_dict(obj[col]) for col in obj.columns
             },
         }
 
@@ -404,7 +528,7 @@ class TupleSerializer(ContainerSerializer):
 
     @classmethod
     def _item_serializer(cls, item):
-        item_serializer = serializer_for_obj(item)
+        item_serializer = serializer_for_obj(item, accept=ContainerSerializer)
         util.require_subclass(ContainerSerializer, item_serializer)
         return item_serializer
 
@@ -431,16 +555,15 @@ class TupleSerializer(ContainerSerializer):
 
 
 def container_from_json(accept, d, built):
-    cls = Serializer.for_tag(d["kind"])
+    cls = serializer_for_tag(accept, d["kind"])
     return cls.from_dict(d, built)
 
 def node_from_json(d, deps, name_map):
-    cls = Serializer.for_tag(d["kind"])
+    cls = serializer_for_tag(NodeSerializer, d["kind"])
     return cls.from_dict(d, deps, name_map)
 
 def node_to_dict(node):
-    cls = serializer_for_obj(node)
-    util.require_subclass(NodeSerializer, cls)
+    cls = serializer_for_obj(node, NodeSerializer)
     return cls.to_dict(node)
 
 def _node_name(node):
@@ -449,18 +572,32 @@ def _node_name(node):
         return f"derived_{id(node)}"
     return str(node.expr)
 
-def serializer_for_obj(obj):
+def serializer_for_obj(obj, accept=Serializer):
     for serializer in Serializer.subclasses.values():
         if serializer.matches(obj):
-            return serializer
-    return None
+            return util.require_subclass(accept, serializer)
+    raise TypeError(f"Cannot find serializer for type {type(obj).__name__!r}")
 
+def serializer_for_tag(accept, tag):
+    result = Serializer.subclasses[tag]
+    return util.require_subclass(accept, result)
+
+def expr_to_dict(expr):
+    """Serialize a SymPy expression to a JSON-safe structural tree."""
+    expr = sp.sympify(expr)
+    cls = serializer_for_obj(expr, accept=SympySerializer)
+    return cls.to_dict(expr)
+
+def expr_from_dict(d, name_map):
+    tag = d["tag"]
+    if tag not in Serializer.subclasses:
+        raise ValueError(f"Unknown or disallowed expression type in file: {tag!r}")
+    cls = serializer_for_tag(SympySerializer, tag)
+    return cls.from_dict(d, name_map)
 
 def save(path, container):
     """Save a NoisyValue, ndarray of NoisyValues, or list/tuple of either to a JSON file."""
-    serializer = serializer_for_obj(container)
-    if serializer is None:
-        raise TypeError(f"Unsupported container type: {type(container)}")
+    serializer = serializer_for_obj(container, accept=ContainerSerializer)
     flat = serializer.children(container)
     consolidated = consolidate(*flat)
     container = serializer.rebuild(container, iter(consolidated))
