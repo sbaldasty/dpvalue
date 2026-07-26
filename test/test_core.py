@@ -279,6 +279,21 @@ def test_noisyint_binomial_invalid_binomial_parameter_yields_nan_draws():
     assert np.all(np.isnan(draws))
 
 
+def test_noisyint_binomial_invalid_parameter_raises_instead_of_corrupting_draws():
+    theta_node = LatentNode()
+    theta = theta_node.expr
+    root = DerivedNode(
+        expr=theta,
+        constraints=(theta - 1.5,),
+        deps=(theta_node,),
+    )
+    prob = from_node(obs=1.5, root=root, expr=theta)
+    resampled = NoisyInt.binomial(10, prob, obs=3)
+
+    with pytest.raises(ValueError, match="NaN"):
+        resampled.sample(n=16, rng=123)
+
+
 def test_sampler_resolves_multilayer_law_dependencies():
     z1 = noise.gaussian(0, 1)
     z1_symbol = z1.expr

@@ -16,6 +16,17 @@ from .graph import NoiseNode
 from .graph import topological_sort_law_nodes
 
 
+def _cast_draws(arr, dtype):
+    arr = np.asarray(arr)
+    if np.issubdtype(dtype, np.integer) and np.isnan(arr).any():
+        raise ValueError(
+            f"NaN in draws cannot be cast to {dtype.__name__}; an upstream noise "
+            "source likely produced an invalid parameter (e.g. a probability "
+            "outside [0, 1])"
+        )
+    return arr.astype(dtype)
+
+
 def _solve_theta_substitutions(thetas, eqns):
     if not thetas:
         return {}
@@ -427,7 +438,7 @@ class NoisyValueSampler:
                 all_draws[node.expr] = node.sample_arrays(rng, *param_arrays)
             eval_args = tuple(all_draws[sym] for sym in self._eval_symbols)
             return tuple(
-                SampleBatch(np.broadcast_to(fn(*eval_args), (n,)).astype(dtype))
+                SampleBatch(_cast_draws(np.broadcast_to(fn(*eval_args), (n,)), dtype))
                 for fn, dtype in zip(self._resolved_expr_eval_fns, dtypes)
             )
 
@@ -462,7 +473,7 @@ class NoisyValueSampler:
             if self._resolved_expr_eval_fns:
                 eval_args = tuple(draws.get(sym, 0) for sym in self._eval_symbols)
                 for out_idx, eval_fn in enumerate(self._resolved_expr_eval_fns):
-                    outputs[out_idx][idx] = dtypes[out_idx](eval_fn(*eval_args))
+                    outputs[out_idx][idx] = _cast_draws(eval_fn(*eval_args), dtypes[out_idx])
             else:
                 for out_idx, sampled_value_expr in enumerate(self._resolved_exprs):
                     sampled_expr = sampled_value_expr.subs(draws)
