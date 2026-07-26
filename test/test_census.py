@@ -1,3 +1,4 @@
+import math
 import os
 
 import numpy as np
@@ -6,10 +7,27 @@ import pytest
 import sympy as sp
 
 from noisyvalue.census import (
+    AGE_3_RANGES,
+    AGE_10_RANGES,
+    AGE_38_RANGES,
+    AGE_40_RANGES,
+    AGE_LEVELS,
     CENRACE_LEVELS,
+    DEFAULT_DHC_ROOT,
     DEFAULT_ROOT,
+    GQ_CONSTR_LEVELS,
     HHGQ_LEVELS,
+    RELGQ_4_LEVELS,
+    RELGQ_LEVELS,
+    RELSHIP_GQ8_LEVELS,
+    RELSHIP_LEVELS,
+    SEX_LEVELS,
+    _DHC_PERSON,
+    _RELGQ_GROUPS,
+    _axis_specs,
     _person_axis_specs,
+    dhc_queries,
+    get_dhc,
     get_pl94,
     pl94_queries,
 )
@@ -39,6 +57,66 @@ def test_pl94_queries_cell_counts():
     assert dict(zip(person["query"], person["cells"]))["detailed"] == 2016
     unit = pl94_queries("unit")
     assert set(unit["query"]) == {"total", "h1"}
+
+
+# ── DHC codebook ─────────────────────────────────────────────────────────────
+
+def test_dhc_relgq_codebook_is_18_household_levels_plus_24_gq_types():
+    assert len(RELGQ_LEVELS) == 42
+    assert len(set(RELGQ_LEVELS)) == 42
+    assert RELGQ_LEVELS[:18] == RELSHIP_LEVELS
+    assert RELGQ_LEVELS[0] == "householder_alone"
+    assert RELGQ_LEVELS[27] == "nursing_facility"
+    assert RELGQ_LEVELS[33] == "college_housing"
+    # the 8-level-GQ variant keeps the relationship levels and collapses the
+    # 24 GQ types into the 7 PL94 major types
+    assert RELSHIP_GQ8_LEVELS == RELSHIP_LEVELS + HHGQ_LEVELS[1:]
+    assert len(RELSHIP_GQ8_LEVELS) == 25
+
+
+def test_dhc_relgq_groupings_partition_the_42_levels():
+    for spec, groups in _RELGQ_GROUPS.items():
+        flat = sorted(i for group in groups for i in group)
+        assert flat == list(range(42)), spec
+    assert len(_RELGQ_GROUPS["relgq_4_groups"]) == len(RELGQ_4_LEVELS)
+    assert len(_RELGQ_GROUPS["gq_constr_groups"]) == len(GQ_CONSTR_LEVELS)
+    assert len(_RELGQ_GROUPS["relship_and_eight_level_GQ"]) == 25
+    # the household/GQ boundary sits between relgq 17 and 18 in every grouping
+    householders, others, institutional, noninstitutional = \
+        _RELGQ_GROUPS["relgq_4_groups"]
+    assert householders == (0, 1)
+    assert others == tuple(range(2, 18))
+    assert institutional + noninstitutional == tuple(range(18, 42))
+
+
+def test_dhc_age_groupings_partition_single_years_zero_to_115():
+    for ranges, size in ((AGE_3_RANGES, 3), (AGE_10_RANGES, 10),
+                         (AGE_38_RANGES, 38), (AGE_40_RANGES, 40)):
+        assert len(ranges) == size
+        covered = [age for lo, hi in ranges for age in range(lo, hi + 1)]
+        assert covered == list(range(116))
+    assert len(AGE_LEVELS) == 116
+    assert AGE_LEVELS[0] == "0" and AGE_LEVELS[-1] == "115"
+
+
+def test_dhc_axis_specs_marginalize_unnamed_axes():
+    assert _axis_specs(_DHC_PERSON, "sex*hispanic") == \
+        ("*", "sex", "*", "hispanic", "*")
+    assert _axis_specs(_DHC_PERSON, "sex*age_38_groups") == \
+        ("*", "sex", "age_38_groups", "*", "*")
+    assert _axis_specs(_DHC_PERSON, "detailed") == ("detailed",) * 5
+
+
+def test_dhc_queries_cell_counts_and_sex_coverage():
+    frame = dhc_queries()
+    cells = dict(zip(frame["query"], frame["cells"]))
+    assert cells["detailed"] == 1_227_744
+    assert cells["sex*hispanic"] == 4
+    assert cells["sex*age_38_groups"] == 2 * 38
+    assert cells["gq_constr_groups*age_10_groups"] == 60
+    with_sex = set(frame[frame["has_sex"]]["query"])
+    assert "sex*hispanic" in with_sex
+    assert "popSehsdTargetsRelship" not in with_sex
 
 
 # ── truncated discrete gaussian ──────────────────────────────────────────────
@@ -279,6 +357,108 @@ def test_get_pl94_real_block_groups_requires_block_group_geography(nmf_root):
                  real_block_groups=True)
 
 
+# ── synthetic DHC fixture ────────────────────────────────────────────────────
+
+@pytest.fixture
+def dhc_root(tmp_path):
+    """Two Vermont counties of DHC person measurements, county-partitioned."""
+    root = str(tmp_path / "dhc")
+
+    def county_rows(geocode, sexhisp, age3):
+        return {
+            "geocode": [geocode] * 2,
+            "query_name": ["hispanic * sex_dpq", "age_18_64_116 * sex_dpq"],
+            "relgq": ["*", "*"],
+            "sex": ["sex", "sex"],
+            "age": ["*", "age_18_64_116"],
+            "hispanic": ["hispanic", "*"],
+            "cenrace": ["*", "*"],
+            "query_shape": [[1, 2, 1, 2, 1], [1, 2, 3, 1, 1]],
+            "value": [sexhisp, age3],
+            "variance": pl.Series([16.0, 16.0], dtype=pl.Float32),
+        }
+
+    for geocode, county, sexhisp, age3 in (
+            # (male/not-hispanic, male/hispanic, female/not, female/hispanic)
+            ("05010007", "05010007", [900, 40, 950, 60], [300, 700, -6, 320, 750, 90]),
+            ("05010009", "05010009", [500, 10, 520, 15], [100, 300, 110, 105, 310, 120])):
+        _write(f"{root}/US_DHCP_PROD/County.parquet/DPQuery/"
+               f"State=050/County={county}/part-0.parquet",
+               pl.DataFrame(county_rows(geocode, sexhisp, age3)))
+    return root
+
+
+def test_get_dhc_tidy_shape_and_labels(dhc_root):
+    df = get_dhc("county", "sex*hispanic", state="VT", root=dhc_root)
+    assert list(df.columns) == [
+        "geoid", "geocode", "aian", "query",
+        "relgq", "sex", "age", "hispanic", "cenrace", "value", "variance"]
+    assert set(df["geoid"]) == {"50007", "50009"}
+    assert not df["aian"].any()
+
+    essex = df[df["geoid"] == "50009"]
+    assert list(zip(essex["sex"], essex["hispanic"])) == [
+        ("male", "not_hispanic"), ("male", "hispanic"),
+        ("female", "not_hispanic"), ("female", "hispanic")]
+    assert [int(v) for v in essex["value"]] == [500, 10, 520, 15]
+    # axes the query marginalizes out are labelled "total"
+    assert set(essex["relgq"]) == {"total"}
+    assert set(essex["age"]) == {"total"}
+
+
+def test_get_dhc_county_filter_prunes_partitions(dhc_root):
+    df = get_dhc("county", "sex*hispanic", state="VT", county="009",
+                 root=dhc_root)
+    assert set(df["geoid"]) == {"50009"}
+    df = get_dhc("county", "sex*hispanic", state="VT", county=[7, 9],
+                 root=dhc_root)
+    assert set(df["geoid"]) == {"50007", "50009"}
+
+
+def test_get_dhc_age_group_labels_follow_the_codebook(dhc_root):
+    df = get_dhc("county", "sex*age_18_64_116", state="VT", county=9,
+                 root=dhc_root)
+    assert list(df["age"]) == ["0-17", "18-64", "65-115"] * 2
+    assert [int(v) for v in df["value"]] == [100, 300, 110, 105, 310, 120]
+
+
+def test_get_dhc_truncates_posteriors_at_zero(dhc_root):
+    df = get_dhc("county", "sex*age_18_64_116", state="VT", county=7,
+                 root=dhc_root)
+    negative = df[(df["sex"] == "male") & (df["age"] == "65-115")]
+    value = negative["value"].array[0]
+    assert int(value) == -6
+    assert value.sample(2000, rng=3).draws.min() >= 0
+
+    unbounded = get_dhc("county", "sex*age_18_64_116", state="VT", county=7,
+                        root=dhc_root, nonnegative=False)
+    value = unbounded[(unbounded["sex"] == "male")
+                      & (unbounded["age"] == "65-115")]["value"].array[0]
+    assert value.sample(2000, rng=3).draws.min() < 0
+
+
+def test_get_dhc_posterior_centers_on_the_measurement(dhc_root):
+    df = get_dhc("county", "sex*hispanic", state="VT", county=9, root=dhc_root)
+    value = df[(df["sex"] == "female")
+               & (df["hispanic"] == "not_hispanic")]["value"].array[0]
+    batch = value.sample(4000, rng=2)
+    assert abs(batch.mean() - 520) < 1.0
+    assert 3.0 < batch.draws.std() < 5.0    # variance 16 -> sd 4
+
+
+def test_get_dhc_rejects_bad_inputs(dhc_root):
+    with pytest.raises(ValueError, match="unknown geography"):
+        get_dhc("tract", "sex*hispanic", state="VT", root=dhc_root)
+    with pytest.raises(ValueError, match="unknown query"):
+        get_dhc("county", "hhgq", state="VT", root=dhc_root)
+    with pytest.raises(ValueError, match="requires a state"):
+        get_dhc("county", "sex*hispanic", root=dhc_root)
+    with pytest.raises(ValueError, match="does not take a state"):
+        get_dhc("us", "sex*hispanic", state="VT", root=dhc_root)
+    with pytest.raises(ValueError, match="county only applies"):
+        get_dhc("state", "sex*hispanic", state="VT", county=9, root=dhc_root)
+
+
 def test_get_pl94_rejects_bad_inputs(nmf_root):
     with pytest.raises(ValueError, match="unknown query"):
         get_pl94("county", "age_by_income", state="VT", root=nmf_root)
@@ -347,3 +527,119 @@ def test_real_data_tract_geoids_resolve_via_block_crosswalk():
     df = get_pl94("tract", "total", state="VT")
     assert df["geoid"].notna().all()
     assert all(g.startswith("50") and len(g) == 11 for g in df["geoid"])
+
+
+# ── integration against the real DHC download ───────────────────────────────
+#
+# These need the partitions `fetch_dhc` mirrors, and are skipped without them:
+#   fetch_dhc("us"); fetch_dhc("county", state="VT")
+
+def _dhc_partition(*parts):
+    return os.path.join(DEFAULT_DHC_ROOT, "US_DHCP_PROD", *parts)
+
+
+requires_dhc_us = pytest.mark.skipif(
+    not os.path.isdir(_dhc_partition("US.parquet")),
+    reason='DHC national partition not present; run fetch_dhc("us")')
+
+requires_dhc_vt = pytest.mark.skipif(
+    not os.path.isdir(_dhc_partition("County.parquet", "DPQuery", "State=050")),
+    reason='DHC Vermont counties not present; '
+           'run fetch_dhc("county", state="VT")')
+
+# Published 2020 census sex counts; the national NMF sd is about 12 per cell.
+PUBLISHED_SEX = {"male": 162_685_811, "female": 168_763_470}
+
+
+def _total_and_sd(frame):
+    """Summed measurement and its standard deviation over a frame's cells."""
+    return (sum(int(v) for v in frame["value"]),
+            math.sqrt(float(frame["variance"].sum())))
+
+
+@requires_dhc_us
+def test_real_dhc_sex_levels_match_published_national_counts():
+    df = get_dhc("us", "sex*hispanic")
+    for sex, published in PUBLISHED_SEX.items():
+        total, sd = _total_and_sd(df[df["sex"] == sex])
+        assert abs(total - published) < 5 * sd, sex
+
+    total, sd = _total_and_sd(df)
+    assert abs(total - 331_449_281) < 5 * sd
+
+
+@requires_dhc_us
+def test_real_dhc_age_groups_split_the_national_population():
+    df = get_dhc("us", "sex*age_18_64_116")
+    by_age = {age: sum(int(v) for v in group["value"])
+              for age, group in df.groupby("age")}
+    assert set(by_age) == {"0-17", "18-64", "65-115"}
+    # published 2020 counts: 73.1M under 18 and 55.8M at 65 or older
+    assert abs(by_age["0-17"] - 73_106_000) < 50_000
+    assert abs(by_age["65-115"] - 55_792_000) < 50_000
+    total, sd = _total_and_sd(df)
+    assert abs(total - 331_449_281) < 5 * sd
+
+
+@requires_dhc_us
+def test_real_dhc_relgq_groupings_agree_across_independent_queries():
+    """The coarse relgq queries measure the same histogram from two sides.
+
+    relgq_4_groups, popSehsdTargetsRelship and gq_constr_groups bin the 42
+    relgq levels differently; if the codebook's group membership were wrong
+    the corresponding totals would disagree by far more than the noise.
+    """
+    four = get_dhc("us", "relgq_4_groups*sex")
+    relship = get_dhc("us", "popSehsdTargetsRelship")
+    constr = get_dhc("us", "gq_constr_groups*age_10_groups")
+
+    householder = relship[relship["relgq"].isin(RELSHIP_LEVELS[:2])]
+    other_household = relship[relship["relgq"].isin(RELSHIP_LEVELS[2:])]
+    gq = relship[relship["relgq"] == "group_quarters"]
+    household = relship[relship["relgq"] != "group_quarters"]
+
+    for left, right in (
+            (four[four["relgq"] == "householder"], householder),
+            (four[four["relgq"] == "other_household_member"], other_household),
+            (four[four["relgq"].isin(("institutional_gq",
+                                      "noninstitutional_gq"))], gq),
+            (constr[constr["relgq"] == "household"], household),
+            (constr[constr["relgq"] != "household"], gq)):
+        left_total, left_sd = _total_and_sd(left)
+        right_total, right_sd = _total_and_sd(right)
+        sd = math.hypot(left_sd, right_sd)
+        assert abs(left_total - right_total) < 5 * sd, (left_total, right_total)
+
+
+@requires_dhc_us
+def test_real_dhc_group_quarters_population_matches_published():
+    df = get_dhc("us", "relgq_4_groups*sex")
+    gq = df[df["relgq"].isin(("institutional_gq", "noninstitutional_gq"))]
+    total, sd = _total_and_sd(gq)
+    assert abs(total - 8_239_000) < 5 * sd + 500      # published is rounded
+
+    householders, sd = _total_and_sd(df[df["relgq"] == "householder"])
+    assert abs(householders - 126_817_000) < 5 * sd + 1_000
+
+
+@requires_dhc_vt
+def test_real_dhc_vermont_counties_resolve_to_geoids():
+    df = get_dhc("county", "sex*hispanic", state="Vermont")
+    geoids = sorted(set(df["geoid"]))
+    assert geoids[0] == "50001"
+    assert len(geoids) == 14
+    assert not df["aian"].any()
+    assert set(df["sex"]) == set(SEX_LEVELS)
+
+    essex = df[df["geoid"] == "50009"]
+    total, sd = _total_and_sd(essex)
+    assert abs(total - 5_920) < 5 * sd               # published Essex County
+
+
+@requires_dhc_vt
+def test_real_dhc_county_filter_matches_a_full_state_read():
+    whole = get_dhc("county", "sex*age_18_64_116", state="VT")
+    one = get_dhc("county", "sex*age_18_64_116", state="VT", county=9)
+    assert set(one["geoid"]) == {"50009"}
+    expected = whole[whole["geoid"] == "50009"]
+    assert [int(v) for v in one["value"]] == [int(v) for v in expected["value"]]

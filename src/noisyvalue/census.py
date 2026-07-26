@@ -1,4 +1,4 @@
-"""Interface to the 2020 Census PL94-171 Noisy Measurement File (NMF).
+"""Interface to the 2020 Census Noisy Measurement Files (NMF).
 
 The NMF is the raw output of the Census Bureau's TopDown disclosure-avoidance
 algorithm: for every geography on the DAS geographic spine, a set of
@@ -7,6 +7,13 @@ person and housing-unit histograms, plus the exact constraints the Bureau's
 own post-processing used.  `get_pl94` reads the Hive-partitioned parquet
 release and returns a tidy pandas DataFrame whose `value` column holds
 `NoisyInt` posteriors.
+
+`get_dhc` does the same for the 2020 Demographic and Housing Characteristics
+person NMF (DHC-P), whose histogram is
+``relgq(42) x sex(2) x age(116) x hispanic(2) x cenrace(63)``.  That product
+is where sex and age live: PL94 has neither.  Its parquet release is public
+but not bundled here; `fetch_dhc` downloads the partitions you ask for into a
+local tree with the same layout `get_dhc` reads.
 
 Because every DP query is noised independently, each cell's posterior under a
 flat prior is a discrete Gaussian centered at the observed count.  Constraint
@@ -27,6 +34,12 @@ across geography levels or across queries, and they differ from the published
 PL94 tables.  That inconsistency is real information about the noise and is
 exactly what the returned posteriors quantify.
 
+The DHC-P constraint rows are not used yet: `get_dhc` posteriors are plain
+discrete Gaussians truncated at zero.  The richest of those rows is
+``pl94_con``, which pins the whole 2016-cell PL94 histogram exactly (the
+published PL94 tables were invariants for the DHC run), so e.g. male + female
+is exactly known within each hispanic level.
+
 Geocodes are DAS spine codes, not census GEOIDs.  The spine splits every
 state into a non-AIAN portion (prefix ``0``) and, where present, an AIAN
 portion (prefix ``1``); both are returned, flagged by the ``aian`` column,
@@ -36,12 +49,19 @@ except block groups, whose spine version ("optimized block groups") does not
 correspond to tabulation block groups; pass ``real_block_groups=True`` to
 ``get_pl94`` to recover real block-group totals instead, by reading at the
 block level (where GEOIDs are exact) and summing up to each block's real
-block group.
+block group.  ``get_dhc`` covers the levels whose spine codes carry exact
+GEOIDs -- us, state, and county; the DHC spine's lower levels (``Prim``,
+``Tract_Subset``, ``Tract_Subset_Group``) are spine constructions with no
+tabulation counterpart.
 """
 
 import itertools
 import math
+import os
+import urllib.parse
+import urllib.request
 import warnings
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pandas as pd
@@ -56,6 +76,11 @@ from .pandas_ext import NoisyFloatArray
 from .pandas_ext import NoisyIntArray
 
 DEFAULT_ROOT = "data/2020-pl94-nmf-parquets"
+DEFAULT_DHC_ROOT = "data/2020-dhc-nmf-parquets"
+
+# Public Census release the DHC noisy measurements are mirrored from.
+DHC_S3_BASE = "https://uscb-2020-product-releases.s3.us-west-2.amazonaws.com"
+DHC_S3_PREFIX = "decennial/dhc/2020/nmf/2020-dhc-nmf"
 
 # ── codebook ─────────────────────────────────────────────────────────────────
 # Level orderings follow the 2020 DAS schema definitions and were validated
@@ -87,9 +112,161 @@ VOTINGAGE_LEVELS = ("under_18", "voting_age")
 HISPANIC_LEVELS = ("not_hispanic", "hispanic")
 H1_LEVELS = ("vacant", "occupied")
 
+# ── DHC-P codebook ───────────────────────────────────────────────────────────
+# The DHC person histogram is relgq x sex x age x hispanic x cenrace; hispanic
+# and cenrace reuse the PL94 orderings.  Every ordering below was recovered
+# from the national NMF itself and is re-checked in test/test_census.py: the
+# coarse queries are marginals of the same histogram `detailed_dpq` measures,
+# so aggregating detailed_dpq under a candidate ordering has to reproduce them
+# to within the measurement noise.
+
+SEX_LEVELS = ("male", "female")
+
+# relgq 0-17: household relationship (2020 RELSHIP, with the householder split
+# by whether they live alone).  relgq 18-41: the 24 major GQ types, in the
+# order 101-106, 201-203, 301, 401-405, 501, 601-602, 701, 801-802, 900, 901,
+# 997.  The DAS age constraints confirm the ordering: relgq 0-5 are 15+ (a
+# householder or spouse/partner cannot be a child), relgq 6-8 are at most 89
+# (a householder's child), 10 and 12 are 30+ (parents and parents-in-law), 11
+# is at most 74 (grandchild), 16 is at most 20 (foster child), 18-22 are 15+
+# (adult correctional), 24-26 are at most 25 (juvenile facilities), 32 is 3-30
+# (residential schools), 33 is 16-65 (college housing), 23/31/34/35 are 17-65
+# (military), 37-38 are 16+ (adult group homes), 39 is 16-75 (merchant ships).
+RELSHIP_LEVELS = (
+    "householder_alone",
+    "householder_not_alone",
+    "opposite_sex_spouse",
+    "opposite_sex_partner",
+    "same_sex_spouse",
+    "same_sex_partner",
+    "biological_child",
+    "adopted_child",
+    "stepchild",
+    "sibling",
+    "parent",
+    "grandchild",
+    "parent_in_law",
+    "child_in_law",
+    "other_relative",
+    "roommate",
+    "foster_child",
+    "other_nonrelative",
+)
+
+GQ_TYPE_LEVELS = (
+    "federal_detention_center",
+    "federal_prison",
+    "state_prison",
+    "local_jail",
+    "correctional_residential_facility",
+    "military_disciplinary_barracks",
+    "juvenile_group_home",
+    "juvenile_residential_treatment",
+    "juvenile_correctional_facility",
+    "nursing_facility",
+    "mental_hospital",
+    "hospital_no_usual_home",
+    "hospice",
+    "military_treatment_facility",
+    "residential_school",
+    "college_housing",
+    "military_quarters",
+    "military_ships",
+    "shelter",
+    "adult_group_home",
+    "adult_residential_treatment",
+    "maritime_vessel",
+    "workers_quarters",
+    "other_noninstitutional_facility",
+)
+
+RELGQ_LEVELS = RELSHIP_LEVELS + GQ_TYPE_LEVELS
+
+# popSehsdTargetsRelship collapses all 24 GQ types into one level; the
+# 8-level-GQ variant collapses them into the 7 PL94 major types instead.
+POPSEHSD_RELSHIP_LEVELS = RELSHIP_LEVELS + ("group_quarters",)
+RELSHIP_GQ8_LEVELS = RELSHIP_LEVELS + HHGQ_LEVELS[1:]
+
+RELGQ_4_LEVELS = (
+    "householder",
+    "other_household_member",
+    "institutional_gq",
+    "noninstitutional_gq",
+)
+
+# The six groups the DAS measures against age_10_groups; each collects GQ
+# types that share an age restriction (see the relgq comment above).
+GQ_CONSTR_LEVELS = (
+    "household",
+    "residential_school",
+    "adult_correctional",
+    "college_and_other_noninstitutional",
+    "military",
+    "other_gq",
+)
+
+# Membership of each coarse relgq grouping, as index groups over RELGQ_LEVELS.
+_RELGQ_GROUPS = {
+    "relgq": tuple((i,) for i in range(42)),
+    "relgq_4_groups": (
+        (0, 1),
+        tuple(range(2, 18)),
+        tuple(range(18, 33)),
+        tuple(range(33, 42)),
+    ),
+    "popSehsdTargetsRelship": (
+        *((i,) for i in range(18)),
+        tuple(range(18, 42)),
+    ),
+    "relship_and_eight_level_GQ": (
+        *((i,) for i in range(18)),
+        tuple(range(18, 24)),   # correctional
+        (24, 25, 26),           # juvenile
+        (27,),                  # nursing
+        tuple(range(28, 33)),   # other institutional
+        (33,),                  # college housing
+        (34, 35),               # military
+        tuple(range(36, 42)),   # other noninstitutional
+    ),
+    "gq_constr_groups": (
+        tuple(range(18)),
+        (32,),
+        tuple(range(18, 23)),
+        (33, 37, 38, 39, 40, 41),
+        (23, 31, 34, 35),
+        (24, 25, 26, 27, 28, 29, 30, 36),
+    ),
+}
+
+
+def _age_labels(ranges):
+    return tuple(f"{lo}" if lo == hi else f"{lo}-{hi}" for lo, hi in ranges)
+
+
+AGE_RANGES = tuple((a, a) for a in range(116))
+AGE_3_RANGES = ((0, 17), (18, 64), (65, 115))
+AGE_10_RANGES = (
+    (0, 2), (3, 14), (15, 15), (16, 16), (17, 17),
+    (18, 19), (20, 24), (25, 29), (30, 34), (35, 115),
+)
+_AGE_TAIL = (
+    (18, 19), (20, 24), (25, 29), (30, 34), (35, 39), (40, 44), (45, 49),
+    (50, 54), (55, 59), (60, 61), (62, 64), (65, 66), (67, 69), (70, 74),
+    (75, 79), (80, 84), (85, 89), (90, 94), (95, 99), (100, 104),
+    (105, 109), (110, 115),
+)
+AGE_38_RANGES = tuple((a, a) for a in range(15)) + ((15, 17),) + _AGE_TAIL
+AGE_40_RANGES = tuple((a, a) for a in range(18)) + _AGE_TAIL
+
+AGE_LEVELS = _age_labels(AGE_RANGES)
+AGE_3_LEVELS = _age_labels(AGE_3_RANGES)
+AGE_10_LEVELS = _age_labels(AGE_10_RANGES)
+AGE_38_LEVELS = _age_labels(AGE_38_RANGES)
+AGE_40_LEVELS = _age_labels(AGE_40_RANGES)
+
 # Per-axis label sets keyed by the spec strings that appear in the NMF's
 # hhgq/votingage/hispanic/cenrace/h1 columns.
-_AXIS_LEVELS = {
+_PL94_AXIS_LEVELS = {
     "hhgq": {
         "*": ("total",),
         "detailed": HHGQ_LEVELS,
@@ -119,6 +296,41 @@ _AXIS_LEVELS = {
     },
 }
 
+_DHC_AXIS_LEVELS = {
+    "relgq": {
+        "*": ("total",),
+        "detailed": RELGQ_LEVELS,
+        "relgq": RELGQ_LEVELS,
+        "relgq_4_groups": RELGQ_4_LEVELS,
+        "popSehsdTargetsRelship": POPSEHSD_RELSHIP_LEVELS,
+        "relship_and_eight_level_GQ": RELSHIP_GQ8_LEVELS,
+        "gq_constr_groups": GQ_CONSTR_LEVELS,
+    },
+    "sex": {
+        "*": ("total",),
+        "detailed": SEX_LEVELS,
+        "sex": SEX_LEVELS,
+    },
+    "age": {
+        "*": ("total",),
+        "detailed": AGE_LEVELS,
+        "age_18_64_116": AGE_3_LEVELS,
+        "age_10_groups": AGE_10_LEVELS,
+        "age_38_groups": AGE_38_LEVELS,
+        "age_40_groups": AGE_40_LEVELS,
+    },
+    "hispanic": {
+        "*": ("total",),
+        "detailed": HISPANIC_LEVELS,
+        "hispanic": HISPANIC_LEVELS,
+    },
+    "cenrace": {
+        "*": ("total",),
+        "detailed": CENRACE_LEVELS,
+        "cenrace": CENRACE_LEVELS,
+    },
+}
+
 # Index groups over the 8 base hhgq levels, used to translate the hhgq bound
 # constraints onto each query's hhgq axis.
 _HHGQ_GROUPS = {
@@ -130,6 +342,7 @@ _HHGQ_GROUPS = {
 
 _PERSON_AXES = ("hhgq", "votingage", "hispanic", "cenrace")
 _UNIT_AXES = ("h1",)
+_DHC_AXES = ("relgq", "sex", "age", "hispanic", "cenrace")
 
 _PERSON_QUERIES = {
     "total": "total_dpq",
@@ -153,6 +366,24 @@ _UNIT_QUERIES = {
     "h1": "detailed_dpq",
 }
 
+# DHC-P query names list their non-marginalized axis specs in histogram axis
+# order, so the canonical name says exactly which binning each axis uses; the
+# raw NMF names order the axes differently and are matched verbatim.
+_DHC_QUERIES = {
+    "sex*hispanic": "hispanic * sex_dpq",
+    "sex*age_18_64_116": "age_18_64_116 * sex_dpq",
+    "sex*age_38_groups": "age_38_groups * sex_dpq",
+    "relgq_4_groups*sex": "sex * relgq_4_groups_dpq",
+    "relgq_4_groups*age_18_64_116": "age_18_64_116 * relgq_4_groups_dpq",
+    "gq_constr_groups*age_10_groups": "gq_constr_groups * age_10_groups_dpq",
+    "popSehsdTargetsRelship": "popSehsdTargetsRelship_dpq",
+    "relgq*sex*age_40_groups*hispanic*cenrace":
+        "relgq * age_40_groups * hispanic * cenrace * sex_dpq",
+    "relship_and_eight_level_GQ*sex*age_40_groups*hispanic*cenrace":
+        "hispanic * sex * age_40_groups * relship_and_eight_level_GQ * cenrace_dpq",
+    "detailed": "detailed_dpq",
+}
+
 _PERSON_CONSTRAINTS = (
     "total_con",
     "nurse_nva_0_con",
@@ -161,7 +392,7 @@ _PERSON_CONSTRAINTS = (
 )
 _UNIT_CONSTRAINTS = ("total_con",)
 
-_GEO_LEVELS = {
+_PL94_GEO_LEVELS = {
     "us": "US",
     "state": "State",
     "county": "County",
@@ -169,6 +400,49 @@ _GEO_LEVELS = {
     "block group": "Block_Group",
     "block_group": "Block_Group",
     "block": "Block",
+}
+
+_DHC_GEO_LEVELS = {
+    "us": "US",
+    "state": "State",
+    "county": "County",
+}
+
+# One spec per (product, table): where the parquet lives, what the histogram
+# axes are, which queries it serves, and how its cells are built.  `rules`
+# names the constraint handling `_emit_cells` applies, and `constraints` the
+# rows it needs; DHC does neither yet.
+_PL94_PERSON = {
+    "dataset": "{}_Person_PL_PROD",
+    "axes": _PERSON_AXES,
+    "levels": _PL94_AXIS_LEVELS,
+    "queries": _PERSON_QUERIES,
+    "constraints": _PERSON_CONSTRAINTS,
+    "geographies": _PL94_GEO_LEVELS,
+    "exact_total_levels": ("US",),
+    "rules": "pl94_person",
+}
+
+_PL94_UNIT = {
+    "dataset": "{}_Unit_PL_PROD",
+    "axes": _UNIT_AXES,
+    "levels": _PL94_AXIS_LEVELS,
+    "queries": _UNIT_QUERIES,
+    "constraints": _UNIT_CONSTRAINTS,
+    "geographies": _PL94_GEO_LEVELS,
+    "exact_total_levels": "all",
+    "rules": "pl94_unit",
+}
+
+_DHC_PERSON = {
+    "dataset": "{}_DHCP_PROD",
+    "axes": _DHC_AXES,
+    "levels": _DHC_AXIS_LEVELS,
+    "queries": _DHC_QUERIES,
+    "constraints": (),
+    "geographies": _DHC_GEO_LEVELS,
+    "exact_total_levels": (),
+    "rules": None,
 }
 
 _STATES = {
@@ -213,17 +487,29 @@ def pl94_queries(table="person"):
     rows = []
     if table == "person":
         for name, raw in _PERSON_QUERIES.items():
-            specs = _person_axis_specs(name)
-            cells = math.prod(
-                len(_AXIS_LEVELS[ax][spec]) for ax, spec in zip(_PERSON_AXES, specs)
-            )
             note = "exact at the national level (total_con)" if name == "total" else ""
-            rows.append((name, raw, cells, note))
+            rows.append((name, raw, _query_cells(_PL94_PERSON, name), note))
     else:
         rows.append(("total", "total_con", 1, "exact at every level (invariant)"))
         rows.append(("h1", "detailed_dpq", 2,
                      "conditioned on the exact total when apply_constraints=True"))
     return pd.DataFrame(rows, columns=["query", "nmf_query_name", "cells", "notes"])
+
+
+def dhc_queries():
+    """Tabulate the queries available from `get_dhc`.
+
+    Returns a plain pandas DataFrame with one row per query: its name, the
+    raw NMF query name, the number of cells per geography, and notes.  A
+    query name lists the binning each histogram axis uses, in axis order
+    (relgq, sex, age, hispanic, cenrace); unlisted axes are marginalized out.
+    """
+    rows = []
+    for name, raw in _DHC_QUERIES.items():
+        specs = _axis_specs(_DHC_PERSON, name)
+        has_sex = specs[_DHC_AXES.index("sex")] != "*"
+        rows.append((name, raw, _query_cells(_DHC_PERSON, name), has_sex))
+    return pd.DataFrame(rows, columns=["query", "nmf_query_name", "cells", "has_sex"])
 
 
 def get_pl94(geography, queries, state=None, *, table="person",
@@ -264,10 +550,9 @@ def get_pl94(geography, queries, state=None, *, table="person",
     NMF measurement variance).
     """
     table = _normalize_table(table)
-    level = _normalize_geography(geography)
-    axes = _PERSON_AXES if table == "person" else _UNIT_AXES
-    qmap = _PERSON_QUERIES if table == "person" else _UNIT_QUERIES
-    queries = _normalize_queries(queries, qmap)
+    spec = _PL94_PERSON if table == "person" else _PL94_UNIT
+    level = _normalize_geography(geography, spec)
+    queries = _normalize_queries(queries, spec["queries"])
 
     states = _resolve_states(state)
     if level == "US":
@@ -294,14 +579,169 @@ def get_pl94(geography, queries, state=None, *, table="person",
 
     products = _group_states_by_product(states)
     frames = [
-        _load_product(product, fips_list, fetch_level, table, axes, qmap,
-                      queries, root, nonnegative, apply_constraints)
+        _load_product(spec, product, fips_list, fetch_level, queries, root,
+                      nonnegative, apply_constraints)
         for product, fips_list in products
     ]
     frame = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
     if level == "Block_Group" and real_block_groups:
-        frame = _aggregate_real_block_groups(frame, axes)
+        frame = _aggregate_real_block_groups(frame, spec["axes"])
     return frame
+
+
+def get_dhc(geography, queries, state=None, county=None, *,
+            root=DEFAULT_DHC_ROOT, nonnegative=True):
+    """Read DHC person NMF measurements as a tidy frame of noisy values.
+
+    This is the product that resolves sex and single-year age; PL94 has
+    neither.  Its histogram is relgq x sex x age x hispanic x cenrace.
+
+    Parameters
+    ----------
+    geography : "us", "state", or "county".  County requires `state`.
+    queries : query name or list of names; see `dhc_queries()`.  Note that
+        `detailed` alone is 1,227,744 cells per geography.
+    state : state FIPS code (int or str), postal abbreviation, or full name;
+        may be a list.  Puerto Rico is a separate NMF product and is routed
+        automatically when requested.
+    county : county FIPS code (int or str) or list of them, to narrow a
+        county-level read; the DHC release partitions by county, so this
+        prunes the files that are read.
+    root : directory holding the `*_DHCP_PROD` parquet datasets, as laid down
+        by `fetch_dhc`.
+    nonnegative : truncate every posterior at zero (true counts cannot be
+        negative).
+
+    The DHC constraint rows (`pl94_con` and the relgq age rules) are not yet
+    applied, so posteriors here are plain discrete Gaussians centered on the
+    observed count, truncated at zero.
+
+    Returns a pandas DataFrame shaped like `get_pl94`'s: `geoid`, `geocode`,
+    `aian`, `query`, one label column per histogram axis (`relgq`, `sex`,
+    `age`, `hispanic`, `cenrace`), `value` (`NoisyInt`), and `variance`.
+    """
+    spec = _DHC_PERSON
+    level = _normalize_geography(geography, spec)
+    queries = _normalize_queries(queries, spec["queries"])
+
+    states = _resolve_states(state)
+    counties = _resolve_counties(county)
+    if level == "US":
+        if states:
+            raise ValueError('geography "us" does not take a state')
+    elif level == "County" and not states:
+        raise ValueError('geography "county" requires a state')
+    if counties and level != "County":
+        raise ValueError('county only applies to geography="county"')
+
+    products = _group_states_by_product(states)
+    frames = [
+        _load_product(spec, product, fips_list, level, queries, root,
+                      nonnegative, False, counties=counties)
+        for product, fips_list in products
+    ]
+    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+
+def fetch_dhc(geography, state=None, county=None, *, root=DEFAULT_DHC_ROOT,
+              overwrite=False):
+    """Download DHC person NMF partitions into `root` for `get_dhc` to read.
+
+    The 2020 DHC NMF is public but large, so nothing is bundled with this
+    package and nothing is fetched implicitly: name the geographies you want
+    and they are mirrored, preserving the release's own directory layout.
+    A state-level partition runs about 1.5 MB per state and a county-level
+    one about 1.8 MB per county.
+
+    Parameters mirror `get_dhc`: `geography` is "us", "state", or "county",
+    `state` selects states (required below the national level), and `county`
+    narrows a county-level fetch to particular county FIPS codes.  Files that
+    already exist are skipped unless `overwrite=True`.
+
+    Returns the list of local paths that now hold the requested partitions.
+    """
+    spec = _DHC_PERSON
+    level = _normalize_geography(geography, spec)
+    states = _resolve_states(state)
+    counties = _resolve_counties(county)
+    if level == "US":
+        if states:
+            raise ValueError('geography "us" does not take a state')
+    elif not states:
+        raise ValueError(f'geography "{geography}" requires a state')
+    if counties and level != "County":
+        raise ValueError('county only applies to geography="county"')
+
+    paths = []
+    for product, fips_list in _group_states_by_product(states):
+        dataset = spec["dataset"].format(product)
+        for kind in ("DPQuery", "Constraint"):
+            base = f"{DHC_S3_PREFIX}/{dataset}/{level}.parquet/{kind}/"
+            # each state is split into a non-AIAN and an AIAN spine branch
+            prefixes = [base] if level == "US" else [
+                f"{base}State={branch:03d}/"
+                for fips in fips_list
+                for branch in (fips, fips + 100)
+            ]
+            for prefix in prefixes:
+                for key in _list_s3_keys(prefix):
+                    if not key.endswith(".parquet"):
+                        continue
+                    if counties and _county_of_key(key) not in counties:
+                        continue
+                    paths.append(_download_key(key, root, overwrite))
+    if not paths:
+        raise RuntimeError(
+            "no DHC partitions matched the request; check the state and "
+            "county codes")
+    return paths
+
+
+def _county_of_key(key):
+    """County FIPS code of a `County=<geocode>`-partitioned object key."""
+    for part in key.split("/"):
+        if part.startswith("County="):
+            return int(part[-4:])
+    return None
+
+
+def _list_s3_keys(prefix):
+    keys = []
+    token = None
+    while True:
+        url = f"{DHC_S3_BASE}?list-type=2&prefix={prefix}"
+        if token is not None:
+            url += f"&continuation-token={urllib.parse.quote(token, safe='')}"
+        with urllib.request.urlopen(url, timeout=60) as response:
+            root = ET.fromstring(response.read())
+        ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+        keys.extend(e.text for e in root.findall("s3:Contents/s3:Key", ns)
+                    if e.text)
+        if root.findtext("s3:IsTruncated", "false", ns).lower() != "true":
+            return keys
+        token = root.findtext("s3:NextContinuationToken", "", ns)
+        if not token:
+            raise RuntimeError("truncated S3 listing without a continuation token")
+
+
+def _download_key(key, root, overwrite):
+    """Mirror one object into `root`, keeping its path below the NMF prefix."""
+    dest = os.path.join(root, os.path.relpath(key, DHC_S3_PREFIX))
+    if os.path.exists(dest) and not overwrite:
+        return dest
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    partial = dest + ".part"
+    try:
+        with urllib.request.urlopen(f"{DHC_S3_BASE}/{key}", timeout=60) as src, \
+                open(partial, "wb") as out:
+            while chunk := src.read(1 << 20):
+                out.write(chunk)
+        os.replace(partial, dest)
+    except BaseException:
+        if os.path.exists(partial):
+            os.remove(partial)
+        raise
+    return dest
 
 
 # ── input normalization ──────────────────────────────────────────────────────
@@ -313,28 +753,33 @@ def _normalize_table(table):
     return t
 
 
-def _normalize_geography(geography):
+def _normalize_geography(geography, spec):
+    levels = spec["geographies"]
     g = str(geography).strip().lower()
-    if g not in _GEO_LEVELS:
+    if g not in levels:
         raise ValueError(
             f"unknown geography {geography!r}; expected one of "
-            f"{sorted(set(_GEO_LEVELS))}")
-    return _GEO_LEVELS[g]
+            f"{sorted(set(levels))}")
+    return levels[g]
 
 
 def _normalize_queries(queries, qmap):
     if isinstance(queries, str):
         queries = [queries]
+    # Query names carry axis specs like popSehsdTargetsRelship, so match
+    # case-insensitively rather than requiring the caller to match case.
+    by_key = {q.lower().replace(" ", ""): q for q in qmap}
     result = []
     for q in queries:
         key = str(q).strip().lower().replace(" ", "")
         if key.endswith("_dpq"):
             key = key[:-4]
-        if key not in qmap:
+        if key not in by_key:
             raise ValueError(
                 f"unknown query {q!r}; expected one of {sorted(qmap)}")
-        if key not in result:
-            result.append(key)
+        canonical = by_key[key]
+        if canonical not in result:
+            result.append(canonical)
     if not result:
         raise ValueError("at least one query is required")
     return result
@@ -366,6 +811,22 @@ def _resolve_states(state):
     return fips
 
 
+def _resolve_counties(county):
+    if county is None:
+        return []
+    if isinstance(county, (str, int, np.integer)):
+        county = [county]
+    fips = []
+    for c in county:
+        text = str(c).strip()
+        if not text.isdigit():
+            raise ValueError(f"county must be a FIPS code, got {c!r}")
+        f = int(text)
+        if f not in fips:
+            fips.append(f)
+    return fips
+
+
 def _group_states_by_product(states):
     """Split requested states into (product, fips_list) pairs."""
     if not states:
@@ -379,21 +840,39 @@ def _group_states_by_product(states):
     return groups
 
 
-def _person_axis_specs(canonical):
-    """Axis spec strings for a canonical person query name."""
+def _axis_specs(spec, canonical):
+    """Per-axis spec strings for a canonical query name.
+
+    A canonical name lists the spec each resolved axis uses, joined by "*";
+    every axis it does not name is marginalized out ("*").
+    """
+    axes, levels = spec["axes"], spec["levels"]
     if canonical == "detailed":
-        return ("detailed", "detailed", "detailed", "detailed")
-    parts = canonical.split("*") if canonical != "total" else []
-    return tuple(ax if ax in parts else "*" for ax in _PERSON_AXES)
+        return tuple("detailed" for _ in axes)
+    parts = canonical.split("*")
+    return tuple(
+        next((p for p in parts if p in levels[ax] and p != "*"), "*")
+        for ax in axes)
+
+
+def _person_axis_specs(canonical):
+    """Axis spec strings for a canonical PL94 person query name."""
+    return _axis_specs(_PL94_PERSON, canonical)
+
+
+def _query_cells(spec, canonical):
+    """Cells per geography for a canonical query name."""
+    return math.prod(
+        len(spec["levels"][ax][s])
+        for ax, s in zip(spec["axes"], _axis_specs(spec, canonical)))
 
 
 # ── data access ──────────────────────────────────────────────────────────────
 
-def _scan(root, product, table, level):
-    kind = "Person" if table == "person" else "Unit"
-    path = f"{root}/{product}_{kind}_PL_PROD/{level}.parquet"
+def _scan(root, spec, product, level):
+    path = f"{root}/{spec['dataset'].format(product)}/{level}.parquet"
     # Partitions were written by different jobs: integer widths drift and
-    # Constraint partitions may lack the sign column entirely.
+    # DPQuery partitions may lack the sign column entirely.
     return pl.scan_parquet(
         path,
         cast_options=pl.ScanCastOptions(integer_cast="upcast"),
@@ -401,16 +880,23 @@ def _scan(root, product, table, level):
     )
 
 
-def _collect_rows(root, product, table, level, fips_list, query_names):
-    lf = _scan(root, product, table, level)
+def _collect_rows(root, spec, product, level, fips_list, query_names,
+                  counties=()):
+    lf = _scan(root, spec, product, level)
     if fips_list and level != "US":
         partitions = [f for fips in fips_list for f in (fips, fips + 100)]
         lf = lf.filter(pl.col("State").is_in(partitions))
+    if counties:
+        # The DHC county partition value is the spine geocode, whose last four
+        # digits are the county FIPS code; it is read as an integer.
+        lf = lf.filter(
+            pl.col("County").cast(pl.Utf8).str.slice(-4).cast(pl.Int64)
+            .is_in(list(counties)))
     lf = lf.filter(pl.col("query_name").is_in(list(query_names)))
     return lf.collect()
 
 
-def _tract_geoids(root, product, table, fips_list):
+def _tract_geoids(root, spec, product, fips_list):
     """Map spine tract codes to standard 11-char tract GEOIDs.
 
     The spine renumbers tracts, but block geocodes embed the standard block
@@ -418,7 +904,7 @@ def _tract_geoids(root, product, table, fips_list):
     tabulation tracts; scanning one query's block geocodes recovers the
     correspondence.
     """
-    lf = _scan(root, product, table, "Block")
+    lf = _scan(root, spec, product, "Block")
     if fips_list:
         partitions = [f for fips in fips_list for f in (fips, fips + 100)]
         lf = lf.filter(pl.col("State").is_in(partitions))
@@ -555,22 +1041,26 @@ def _conditioned_unit_pair(obs_vac, obs_occ, variance, total, nonnegative):
 
 # ── assembly ─────────────────────────────────────────────────────────────────
 
-def _load_product(product, fips_list, level, table, axes, qmap, queries,
-                  root, nonnegative, apply_constraints):
+def _load_product(spec, product, fips_list, level, queries, root, nonnegative,
+                  apply_constraints, counties=()):
+    axes, qmap = spec["axes"], spec["queries"]
     raw_names = {qmap[q] for q in queries if qmap[q] is not None}
+    exact_levels = spec["exact_total_levels"]
     exact_total = "total" in queries and (
-        table == "unit" or (table == "person" and level == "US"))
-    con_names = _PERSON_CONSTRAINTS if table == "person" else _UNIT_CONSTRAINTS
+        exact_levels == "all" or level in exact_levels)
+    con_names = spec["constraints"]
 
     need_constraints = apply_constraints or exact_total
     wanted = set(raw_names) | (set(con_names) if need_constraints else set())
-    rows = _collect_rows(root, product, table, level, fips_list, wanted)
+    rows = _collect_rows(root, spec, product, level, fips_list, wanted,
+                         counties=counties)
 
     constraints = {}
-    for r in rows.filter(pl.col("sign").is_not_null()).iter_rows(named=True):
-        constraints[(r["geocode"], r["query_name"])] = r["value"]
-
-    dpq = rows.filter(pl.col("sign").is_null()).sort("query_name", "geocode")
+    if "sign" in rows.columns:
+        for r in rows.filter(pl.col("sign").is_not_null()).iter_rows(named=True):
+            constraints[(r["geocode"], r["query_name"])] = r["value"]
+        rows = rows.filter(pl.col("sign").is_null())
+    dpq = rows.sort("query_name", "geocode")
 
     total_cells = int(dpq.select(pl.col("value").list.len().sum()).item() or 0)
     if total_cells > _MATERIALIZE_WARN_CELLS:
@@ -580,7 +1070,7 @@ def _load_product(product, fips_list, level, table, axes, qmap, queries,
 
     tract_xwalk = {}
     if level == "Tract":
-        tract_xwalk = _tract_geoids(root, product, table, fips_list)
+        tract_xwalk = _tract_geoids(root, spec, product, fips_list)
 
     canonical_by_raw = {v: k for k, v in qmap.items() if v is not None}
     columns = {
@@ -611,11 +1101,11 @@ def _load_product(product, fips_list, level, table, axes, qmap, queries,
 
     for r in dpq.iter_rows(named=True):
         canonical = canonical_by_raw[r["query_name"]]
-        if table == "unit" and canonical == "h1":
+        if spec["rules"] == "pl94_unit" and canonical == "h1":
             _emit_unit_h1(emit, r, constraints, nonnegative, apply_constraints)
         else:
-            _emit_person_query(emit, r, canonical, constraints,
-                               nonnegative, apply_constraints)
+            _emit_cells(emit, r, canonical, spec, constraints,
+                        nonnegative, apply_constraints)
 
     frame = pd.DataFrame({
         "geoid": pd.array(columns["geoid"], dtype="string"),
@@ -648,15 +1138,15 @@ def _emit_unit_h1(emit, row, constraints, nonnegative, apply_constraints):
     emit(geocode, "h1", ("occupied",), variance, occ)
 
 
-def _emit_person_query(emit, row, canonical, constraints,
-                       nonnegative, apply_constraints):
+def _emit_cells(emit, row, canonical, spec, constraints,
+                nonnegative, apply_constraints):
+    axes = spec["axes"]
     geocode = row["geocode"]
     variance = float(row["variance"])
     sd = math.sqrt(variance)
     values = row["value"]
-    specs = tuple(row[ax] for ax in _PERSON_AXES)
-    axis_labels = [_AXIS_LEVELS[ax][spec]
-                   for ax, spec in zip(_PERSON_AXES, specs)]
+    specs = tuple(row[ax] for ax in axes)
+    axis_labels = [spec["levels"][ax][s] for ax, s in zip(axes, specs)]
 
     sizes = tuple(len(labels) for labels in axis_labels)
     if math.prod(sizes) != len(values):
@@ -668,7 +1158,7 @@ def _emit_person_query(emit, row, canonical, constraints,
 
     hhgq_bounds = None
     structural_zero = False
-    if apply_constraints:
+    if apply_constraints and spec["rules"] == "pl94_person":
         hhgq_bounds = _hhgq_axis_bounds(geocode, specs, constraints)
         nurse = constraints.get((geocode, "nurse_nva_0_con"))
         structural_zero = (
