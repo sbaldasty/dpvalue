@@ -213,6 +213,72 @@ def test_get_pl94_unit_without_constraints_stays_independent(nmf_root):
     assert abs(batch_vac.mean() - 30) < 1.0
 
 
+@pytest.fixture
+def block_nmf_root(tmp_path):
+    root = str(tmp_path / "nmf")
+
+    def block_geocode(bg, block):
+        # "0" (non-AIAN branch) + state(2) + county(3) + tract(6) + bg(1) + block(4).
+        # bg must equal block's own leading digit, matching real NMF encoding.
+        return f"0{50:02d}001000100{bg}{block}"
+
+    # Blocks 1001 and 1002 share real block group 500010001001 (bg digit "1");
+    # block 2001 falls in a different real block group (bg digit "2").
+    geocodes = [block_geocode(1, "1001"), block_geocode(1, "1002"),
+                block_geocode(2, "2001")]
+    dpq = pl.DataFrame({
+        "geocode": geocodes,
+        "query_name": ["total_dpq"] * 3,
+        "hhgq": ["*"] * 3,
+        "votingage": ["*"] * 3,
+        "hispanic": ["*"] * 3,
+        "cenrace": ["*"] * 3,
+        "query_shape": [[1, 1, 1, 1]] * 3,
+        "value": [[10], [20], [5]],
+        "variance": pl.Series([100.0, 100.0, 100.0], dtype=pl.Float32),
+    })
+    _write(f"{root}/US_Person_PL_PROD/Block.parquet/DPQuery/State=50/part-0.parquet", dpq)
+
+    # A constraint row purely so the "sign" column exists in the scanned
+    # schema; its geocode/query don't match anything "total" consults.
+    con = pl.DataFrame({
+        "geocode": [geocodes[0]],
+        "query_name": ["nurse_nva_0_con"],
+        "sign": ["="],
+        "hhgq": ["gqNursingTotal"],
+        "votingage": ["nonvoting"],
+        "hispanic": ["*"],
+        "cenrace": ["*"],
+        "query_shape": [[1, 1, 1, 1]],
+        "value": [[0]],
+        "variance": pl.Series([0.0], dtype=pl.Float32),
+    })
+    _write(f"{root}/US_Person_PL_PROD/Block.parquet/Constraint/State=50/part-0.parquet", con)
+    return root
+
+
+def test_get_pl94_real_block_groups_sums_blocks(block_nmf_root):
+    df = get_pl94("block group", "total", state="VT", root=block_nmf_root,
+                  real_block_groups=True)
+    assert set(df["geoid"]) == {"500010001001", "500010001002"}
+    assert df["geocode"].isna().all()
+
+    combined = df[df["geoid"] == "500010001001"]["value"].array[0]
+    assert int(combined) == 30
+    assert bool(df[df["geoid"] == "500010001001"]["aian"].iloc[0]) is False
+    draws = combined.sample(3000, rng=1).draws
+    assert draws.std() > 5  # noise from both summed blocks survives
+
+    solo = df[df["geoid"] == "500010001002"]["value"].array[0]
+    assert int(solo) == 5
+
+
+def test_get_pl94_real_block_groups_requires_block_group_geography(nmf_root):
+    with pytest.raises(ValueError, match="real_block_groups"):
+        get_pl94("county", "total", state="VT", root=nmf_root,
+                 real_block_groups=True)
+
+
 def test_get_pl94_rejects_bad_inputs(nmf_root):
     with pytest.raises(ValueError, match="unknown query"):
         get_pl94("county", "age_by_income", state="VT", root=nmf_root)

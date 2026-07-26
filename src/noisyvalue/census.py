@@ -33,7 +33,10 @@ portion (prefix ``1``); both are returned, flagged by the ``aian`` column,
 and rows sharing a ``geoid`` can be summed (NoisyInt arithmetic) to get
 whole-geography estimates.  Standard GEOIDs are derivable for every level
 except block groups, whose spine version ("optimized block groups") does not
-correspond to tabulation block groups.
+correspond to tabulation block groups; pass ``real_block_groups=True`` to
+``get_pl94`` to recover real block-group totals instead, by reading at the
+block level (where GEOIDs are exact) and summing up to each block's real
+block group.
 """
 
 import itertools
@@ -49,6 +52,7 @@ from .core import NoisyInt
 from .graph import DerivedNode
 from .graph import DiscreteGaussianNode
 from .graph import TruncatedDiscreteGaussianNode
+from .pandas_ext import NoisyFloatArray
 from .pandas_ext import NoisyIntArray
 
 DEFAULT_ROOT = "data/2020-pl94-nmf-parquets"
@@ -223,7 +227,8 @@ def pl94_queries(table="person"):
 
 
 def get_pl94(geography, queries, state=None, *, table="person",
-             root=DEFAULT_ROOT, nonnegative=True, apply_constraints=True):
+             root=DEFAULT_ROOT, nonnegative=True, apply_constraints=True,
+             real_block_groups=False):
     """Read PL94 NMF measurements as a tidy frame of noisy values.
 
     Parameters
@@ -240,12 +245,23 @@ def get_pl94(geography, queries, state=None, *, table="person",
         negative).
     apply_constraints : condition posteriors on the NMF constraint rows
         (exact totals, structural zeros, hhgq bounds).
+    real_block_groups : only valid with `geography="block group"`.  Instead
+        of returning the raw spine ("optimized") block groups, reads at the
+        block level and sums block measurements up to real tabulation block
+        groups (a block's group digit always duplicates its own leading
+        digit, so the real grouping is recoverable exactly).  This reads and
+        materializes every block in the requested area, so it is far more
+        expensive than the default.
 
     Returns a pandas DataFrame with one row per cell: `geoid` (standard
     census GEOID where derivable, otherwise <NA>), `geocode` (raw spine
-    code), `aian` (True for AIAN-branch spine geographies), `query`, one
-    label column per histogram axis, `value` (NoisyInt), and `variance`
-    (the NMF measurement variance).
+    code, or <NA> when `real_block_groups=True` since a summed row no longer
+    corresponds to one spine geography), `aian` (True/False for AIAN-branch
+    spine geographies, or <NA> when `real_block_groups=True` and the real
+    block group straddles both branches), `query`, one label column per
+    histogram axis, `value` (`NoisyInt`, or `NoisyFloat` when
+    `real_block_groups=True` since summing promotes it), and `variance` (the
+    NMF measurement variance).
     """
     table = _normalize_table(table)
     level = _normalize_geography(geography)
@@ -260,19 +276,32 @@ def get_pl94(geography, queries, state=None, *, table="person",
     elif level in ("Tract", "Block_Group", "Block") and not states:
         raise ValueError(f'geography "{geography}" requires a state')
 
+    if real_block_groups and level != "Block_Group":
+        raise ValueError(
+            'real_block_groups=True only applies to geography="block group"')
+
+    fetch_level = level
     if level == "Block_Group":
-        warnings.warn(
-            "NMF block groups are DAS 'optimized block groups' and do not "
-            "correspond to census tabulation block groups; geoid is left <NA>.",
-            stacklevel=2)
+        if real_block_groups:
+            fetch_level = "Block"
+        else:
+            warnings.warn(
+                "NMF block groups are DAS 'optimized block groups' and do not "
+                "correspond to census tabulation block groups; geoid is left "
+                "<NA>. Pass real_block_groups=True to recover real "
+                "block-group totals by summing block-level measurements.",
+                stacklevel=2)
 
     products = _group_states_by_product(states)
     frames = [
-        _load_product(product, fips_list, level, table, axes, qmap, queries,
-                      root, nonnegative, apply_constraints)
+        _load_product(product, fips_list, fetch_level, table, axes, qmap,
+                      queries, root, nonnegative, apply_constraints)
         for product, fips_list in products
     ]
-    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    frame = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    if level == "Block_Group" and real_block_groups:
+        frame = _aggregate_real_block_groups(frame, axes)
+    return frame
 
 
 # ── input normalization ──────────────────────────────────────────────────────
@@ -434,6 +463,41 @@ def _is_aian(level, geocode):
     if level == "US":
         return False
     return geocode.startswith("1")
+
+
+def _aggregate_real_block_groups(frame, axes):
+    """Sum block-level rows up to real tabulation block-group totals.
+
+    A block's `geoid` (state+county+tract+block) already contains its real
+    block group prefix: the first 12 characters are state+county+tract plus
+    the block group digit, since that digit always duplicates the block
+    code's own leading digit (see `_geoid`). Summed with plain `+` rather
+    than the extension array's own `.sum()` reduction, since pandas' groupby
+    machinery collapses that reduction to a constant, silently discarding
+    every contributing block's noise.
+    """
+    frame = frame.copy()
+    frame["geoid"] = frame["geoid"].str.slice(0, 12)
+    group_cols = ["geoid", "query", *axes]
+
+    rows = []
+    for key, group in frame.groupby(group_cols, sort=False):
+        values = list(group["value"])
+        total = values[0]
+        for v in values[1:]:
+            total = total + v
+        aian_values = group["aian"].unique()
+        aian = bool(aian_values[0]) if len(aian_values) == 1 else pd.NA
+        rows.append((*key, aian, float(group["variance"].sum()), total))
+
+    out = pd.DataFrame(rows, columns=[*group_cols, "aian", "variance", "value"])
+    out["geoid"] = out["geoid"].astype("string")
+    out["aian"] = pd.array(out["aian"], dtype="boolean")
+    out["geocode"] = pd.array([pd.NA] * len(out), dtype="string")
+    out["value"] = NoisyFloatArray(
+        np.array([float(v._obs) for v in out["value"]], dtype="float64"),
+        np.array([v._root for v in out["value"]], dtype=object))
+    return out[["geoid", "geocode", "aian", "query", *axes, "value", "variance"]]
 
 
 # ── posterior construction ───────────────────────────────────────────────────
