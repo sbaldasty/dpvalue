@@ -26,7 +26,15 @@ rows are not exposed as data; instead they sharpen the posteriors:
 - ``nurse_nva_0_con``: structural zero -- detailed cells for under-18
   residents of nursing facilities are pinned to exactly zero.
 - ``hhgq_total_lb_con`` / ``hhgq_total_ub_con``: interval bounds on the hhgq
-  category totals, applied by truncating the affected posteriors.
+  (PL94) or per-facility-type GQ (DHC) category totals, applied by truncating
+  the affected posteriors.
+- ``pl94_con`` (DHC): the published PL94 table for the geography, exact,
+  because it was an invariant of the DHC run.  The DHC histogram
+  marginalizes onto it, so each query's cells split into blocks of known
+  total; see ``_dhc_pl94_blocks`` for what each block size buys.
+- ``relgqN_..._con`` (DHC): structural zeros pinning ages a relationship or
+  facility type cannot have -- no 14-year-old householders, nobody over 65 in
+  college housing.
 - All counts are additionally truncated at zero when ``nonnegative=True``.
 
 Note that the NMF is *pre* post-processing: noisy measurements do not add up
@@ -34,11 +42,14 @@ across geography levels or across queries, and they differ from the published
 PL94 tables.  That inconsistency is real information about the noise and is
 exactly what the returned posteriors quantify.
 
-The DHC-P constraint rows are not used yet: `get_dhc` posteriors are plain
-discrete Gaussians truncated at zero.  The richest of those rows is
-``pl94_con``, which pins the whole 2016-cell PL94 histogram exactly (the
-published PL94 tables were invariants for the DHC run), so e.g. male + female
-is exactly known within each hispanic level.
+Conditioning a DHC query on ``pl94_con`` does a great deal of work, because
+PL94 resolves every DHC axis but sex: male + female is pinned within each
+hispanic level, and in a small county most of the detailed histogram becomes
+point masses at zero (PL94 says the county holds nobody in that category at
+all).  What it cannot pin is a block of three or more free cells, where the
+conditional posterior is a discrete Gaussian on a lattice hyperplane rather
+than anything the node graph samples cell by cell; those keep the block total
+only as an upper bound.
 
 Geocodes are DAS spine codes, not census GEOIDs.  The spine splits every
 state into a non-AIAN portion (prefix ``0``) and, where present, an AIAN
@@ -58,6 +69,7 @@ tabulation counterpart.
 import itertools
 import math
 import os
+import re
 import urllib.parse
 import urllib.request
 import warnings
@@ -264,6 +276,90 @@ AGE_10_LEVELS = _age_labels(AGE_10_RANGES)
 AGE_38_LEVELS = _age_labels(AGE_38_RANGES)
 AGE_40_LEVELS = _age_labels(AGE_40_RANGES)
 
+
+# ── DHC-P constraint tables ──────────────────────────────────────────────────
+# What the three families of DHC constraint row mean, as index sets over the
+# histogram axes.  All three were checked against the data (test_census.py):
+# the ages a relgq rule forbids hold nothing but noise, the gqlevels bounds
+# name exactly the facility types a county has, and pl94_con reproduces the
+# published PL94 table for the geography.
+
+def _singles(n):
+    return tuple((i,) for i in range(n))
+
+
+def _range_groups(ranges):
+    return tuple(tuple(range(lo, hi + 1)) for lo, hi in ranges)
+
+
+# Index groups over each axis, per axis spec: the base cells every position of
+# a query's axis covers.  Parallel to _DHC_AXIS_LEVELS, which labels them.
+_DHC_AXIS_GROUPS = {
+    "relgq": {
+        "*": (tuple(range(42)),),
+        "detailed": _singles(42),
+        **_RELGQ_GROUPS,
+    },
+    "sex": {"*": ((0, 1),), "detailed": _singles(2), "sex": _singles(2)},
+    "age": {
+        "*": (tuple(range(116)),),
+        "detailed": _singles(116),
+        "age_18_64_116": _range_groups(AGE_3_RANGES),
+        "age_10_groups": _range_groups(AGE_10_RANGES),
+        "age_38_groups": _range_groups(AGE_38_RANGES),
+        "age_40_groups": _range_groups(AGE_40_RANGES),
+    },
+    "hispanic": {"*": ((0, 1),), "detailed": _singles(2), "hispanic": _singles(2)},
+    "cenrace": {
+        "*": (tuple(range(63)),),
+        "detailed": _singles(63),
+        "cenrace": _singles(63),
+    },
+}
+
+# Ages each `relgqN_..._con` row pins to zero, keyed by its age spec string.
+_AGE_ZERO_RULES = {
+    "age_lessthan15": frozenset(range(0, 15)),
+    "age_lessthan20": frozenset(range(0, 20)),
+    "age_lessthan30": frozenset(range(0, 30)),
+    "age_lt16": frozenset(range(0, 16)),
+    "age_greaterthan25": frozenset(range(26, 116)),
+    "age_greaterthan89": frozenset(range(90, 116)),
+    "age_gt20": frozenset(range(21, 116)),
+    "age_gt74": frozenset(range(75, 116)),
+    "age_lt15_gt89": frozenset(range(0, 15)) | frozenset(range(90, 116)),
+    "age_lt16_gt75": frozenset(range(0, 16)) | frozenset(range(76, 116)),
+    "age_lt16gt65": frozenset(range(0, 16)) | frozenset(range(66, 116)),
+    "age_lt17gt65": frozenset(range(0, 17)) | frozenset(range(66, 116)),
+    "age_lt3_gt30": frozenset(range(0, 3)) | frozenset(range(31, 116)),
+}
+
+
+def _relgq_to_hhgq8():
+    """relgq level -> its PL94 hhgq category, the coarsening pl94_con uses."""
+    out = [0] * 42                                  # relgq 0-17 are households
+    gq_classes = _RELGQ_GROUPS["relship_and_eight_level_GQ"][18:]
+    for category, group in enumerate(gq_classes, start=1):
+        for level in group:
+            out[level] = category
+    return tuple(out)
+
+
+# pl94_con is an 8 x 2 x 2 x 63 histogram over hhgq x votingage x hispanic x
+# cenrace, so it resolves every DHC axis except sex.
+_PL94_SHAPE = (8, 2, 2, 63)
+_PL94_AXIS_OF = {"relgq": 0, "age": 1, "hispanic": 2, "cenrace": 3}
+_PL94_CLASS_OF = {
+    "relgq": _relgq_to_hhgq8(),
+    "age": tuple(0 if age < 18 else 1 for age in range(116)),
+    "hispanic": (0, 1),
+    "cenrace": tuple(range(63)),
+}
+
+# The gqlevels axis the hhgq bound rows use: one household level, then the 24
+# GQ types in relgq order.
+_GQLEVEL_MEMBERS = (tuple(range(18)),) + tuple((i,) for i in range(18, 42))
+
 # Per-axis label sets keyed by the spec strings that appear in the NMF's
 # hhgq/votingage/hispanic/cenrace/h1 columns.
 _PL94_AXIS_LEVELS = {
@@ -439,10 +535,11 @@ _DHC_PERSON = {
     "axes": _DHC_AXES,
     "levels": _DHC_AXIS_LEVELS,
     "queries": _DHC_QUERIES,
-    "constraints": (),
+    # the relgq zero rules are one row per rule, so take every constraint row
+    "constraints": "all",
     "geographies": _DHC_GEO_LEVELS,
     "exact_total_levels": (),
-    "rules": None,
+    "rules": "dhc_person",
 }
 
 _STATES = {
@@ -590,7 +687,7 @@ def get_pl94(geography, queries, state=None, *, table="person",
 
 
 def get_dhc(geography, queries, state=None, county=None, *,
-            root=DEFAULT_DHC_ROOT, nonnegative=True):
+            root=DEFAULT_DHC_ROOT, nonnegative=True, apply_constraints=True):
     """Read DHC person NMF measurements as a tidy frame of noisy values.
 
     This is the product that resolves sex and single-year age; PL94 has
@@ -611,10 +708,11 @@ def get_dhc(geography, queries, state=None, county=None, *,
         by `fetch_dhc`.
     nonnegative : truncate every posterior at zero (true counts cannot be
         negative).
-
-    The DHC constraint rows (`pl94_con` and the relgq age rules) are not yet
-    applied, so posteriors here are plain discrete Gaussians centered on the
-    observed count, truncated at zero.
+    apply_constraints : condition posteriors on the NMF constraint rows --
+        the exact PL94 table for the geography (`pl94_con`), the relgq age
+        rules, and the per-facility-type GQ bounds.  Cells the PL94 table
+        pins are returned as point masses, and cells it ties together in
+        pairs are built jointly, so they always sum to the invariant.
 
     Returns a pandas DataFrame shaped like `get_pl94`'s: `geoid`, `geocode`,
     `aian`, `query`, one label column per histogram axis (`relgq`, `sex`,
@@ -637,7 +735,7 @@ def get_dhc(geography, queries, state=None, county=None, *,
     products = _group_states_by_product(states)
     frames = [
         _load_product(spec, product, fips_list, level, queries, root,
-                      nonnegative, False, counties=counties)
+                      nonnegative, apply_constraints, counties=counties)
         for product, fips_list in products
     ]
     return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
@@ -881,7 +979,7 @@ def _scan(root, spec, product, level):
 
 
 def _collect_rows(root, spec, product, level, fips_list, query_names,
-                  counties=()):
+                  constraints=(), counties=()):
     lf = _scan(root, spec, product, level)
     if fips_list and level != "US":
         partitions = [f for fips in fips_list for f in (fips, fips + 100)]
@@ -892,8 +990,13 @@ def _collect_rows(root, spec, product, level, fips_list, query_names,
         lf = lf.filter(
             pl.col("County").cast(pl.Utf8).str.slice(-4).cast(pl.Int64)
             .is_in(list(counties)))
-    lf = lf.filter(pl.col("query_name").is_in(list(query_names)))
-    return lf.collect()
+    keep = pl.col("query_name").is_in(list(query_names))
+    if constraints == "all":
+        if "sign" in lf.collect_schema().names():
+            keep = keep | pl.col("sign").is_not_null()
+    elif constraints:
+        keep = keep | pl.col("query_name").is_in(list(constraints))
+    return lf.filter(keep).collect()
 
 
 def _tract_geoids(root, spec, product, fips_list):
@@ -988,8 +1091,14 @@ def _aggregate_real_block_groups(frame, axes):
 
 # ── posterior construction ───────────────────────────────────────────────────
 
-def _exact_count(obs, pinned):
-    return NoisyInt(int(obs), DerivedNode(sp.Integer(int(pinned))))
+def _exact_count(pinned):
+    """A NoisyInt with no uncertainty left: a constraint pins the true count.
+
+    The measurement it replaces is dropped rather than kept as the observed
+    value, since the posterior is a point mass and the noisy number is known
+    to be wrong.
+    """
+    return NoisyInt(int(pinned), DerivedNode(sp.Integer(int(pinned))))
 
 
 def _noisy_count(obs, sd, lb=None, ub=None):
@@ -1001,7 +1110,7 @@ def _noisy_count(obs, sd, lb=None, ub=None):
     """
     obs = int(obs)
     if lb is not None and ub is not None and lb == ub:
-        return _exact_count(obs, lb)
+        return _exact_count(lb)
     if lb is None and ub is None:
         node = DiscreteGaussianNode.create(loc=sp.Integer(0), scale=sp.Float(sd))
     else:
@@ -1014,29 +1123,204 @@ def _noisy_count(obs, sd, lb=None, ub=None):
     return NoisyInt(obs, root)
 
 
-def _conditioned_unit_pair(obs_vac, obs_occ, variance, total, nonnegative):
-    """Occupied/vacant posteriors conditioned on the exact unit total.
+def _conditioned_pair(obs_a, obs_b, variance, total, nonnegative):
+    """Two cells conditioned on their exact sum.
 
-    With independent measurements obs_vac = vac + e1 and obs_occ = occ + e2
-    (equal variance v) and the invariant vac + occ = total, the posterior of
-    vac over the integers is a discrete Gaussian centered at
-    (obs_vac - obs_occ + total)/2 with variance v/2, and occ = total - vac
-    exactly (perfect negative correlation).
+    With independent measurements obs_a = a + e1 and obs_b = b + e2 (equal
+    variance v) and a known exact a + b = total, the posterior of a over the
+    integers is a discrete Gaussian centered at (obs_a - obs_b + total)/2
+    with variance v/2, and b = total - a exactly (perfect negative
+    correlation).  This is the only block size for which the conditional
+    posterior is again a discrete Gaussian, so it is the only one built
+    jointly; see `_dhc_pl94_blocks`.
     """
-    obs_vac, obs_occ, total = int(obs_vac), int(obs_occ), int(total)
+    obs_a, obs_b, total = int(obs_a), int(obs_b), int(total)
     scale = sp.sqrt(sp.Float(float(variance)) / 2)
-    delta = sp.Rational(obs_vac + obs_occ - total, 2)
+    delta = sp.Rational(obs_a + obs_b - total, 2)
     if nonnegative:
         node = TruncatedDiscreteGaussianNode.create(
             loc=delta, scale=scale,
-            low=sp.Integer(obs_vac - total), high=sp.Integer(obs_vac))
+            low=sp.Integer(obs_a - total), high=sp.Integer(obs_a))
     else:
         node = DiscreteGaussianNode.create(loc=delta, scale=scale)
-    vac_root = DerivedNode(sp.Integer(obs_vac) - node.expr, deps=(node,))
-    vac = NoisyInt(obs_vac, vac_root)
-    occ_root = DerivedNode(sp.Integer(total) - vac_root.expr, deps=(vac_root,))
-    occ = NoisyInt(obs_occ, occ_root)
-    return vac, occ
+    a_root = DerivedNode(sp.Integer(obs_a) - node.expr, deps=(node,))
+    a = NoisyInt(obs_a, a_root)
+    b_root = DerivedNode(sp.Integer(total) - a_root.expr, deps=(a_root,))
+    b = NoisyInt(obs_b, b_root)
+    return a, b
+
+
+# ── constraint rules ─────────────────────────────────────────────────────────
+
+def _pl94_person_rules(geocode, specs, canonical, constraints, exact, lb, ub):
+    """Fill PL94 person bounds: hhgq category bounds and the nursing zero."""
+    bounds = _hhgq_axis_bounds(geocode, specs, constraints)
+    if bounds is not None:
+        for pos, (g_lb, g_ub) in enumerate(bounds):
+            if g_ub is not None:
+                ub[pos] = np.minimum(ub[pos], g_ub)
+            if g_lb is not None:
+                lb[pos] = np.maximum(lb[pos], g_lb)
+    nurse = constraints.get((geocode, "nurse_nva_0_con"))
+    if canonical == "detailed" and nurse is not None and int(nurse[0]) == 0:
+        exact[3, 0] = 0.0                # under-18 residents of nursing homes
+
+
+def _dhc_person_rules(geocode, specs, sizes, obs, variance, constraints,
+                      constraint_specs, nonnegative, exact, lb, ub):
+    """Apply the DHC constraint rows to one query's cells.
+
+    Fills `exact`/`lb`/`ub` in place and returns {flat index: NoisyInt} for
+    the cells that had to be built jointly.
+    """
+    _dhc_gq_bounds(geocode, specs, constraints, lb, ub)
+    _dhc_structural_zeros(geocode, specs, sizes, constraints, constraint_specs,
+                          exact)
+    return _dhc_pl94_blocks(geocode, specs, sizes, obs, variance, constraints,
+                            nonnegative, exact, ub)
+
+
+def _dhc_gq_bounds(geocode, specs, constraints, lb, ub):
+    """Bound the relgq axis by the per-facility-type hhgq bound rows.
+
+    The bounds count facilities: a GQ type with f facilities of that kind in
+    the geography holds at least f people and at most 99999 each.  Upper
+    bounds transfer to any sub-slice of a category; lower bounds only apply
+    when the cell is the whole category total.
+    """
+    lows = constraints.get((geocode, "hhgq_total_lb_con"))
+    highs = constraints.get((geocode, "hhgq_total_ub_con"))
+    groups = _DHC_AXIS_GROUPS["relgq"].get(specs[0])
+    if lows is None or highs is None or groups is None:
+        return
+    whole_category = all(s == "*" for s in specs[1:])
+    for pos, group in enumerate(groups):
+        members = set(group)
+        touched = [level for level, levels in enumerate(_GQLEVEL_MEMBERS)
+                   if members & set(levels)]
+        ub[pos] = np.minimum(ub[pos], sum(int(highs[l]) for l in touched))
+        if whole_category:
+            covered = [level for level, levels in enumerate(_GQLEVEL_MEMBERS)
+                       if set(levels) <= members]
+            lb[pos] = np.maximum(lb[pos], sum(int(lows[l]) for l in covered))
+
+
+def _dhc_structural_zeros(geocode, specs, sizes, constraints, constraint_specs,
+                          exact):
+    """Pin cells the relgq age rules forbid (no 14-year-old householders)."""
+    relgq_groups = _DHC_AXIS_GROUPS["relgq"].get(specs[0])
+    age_groups = _DHC_AXIS_GROUPS["age"].get(specs[2])
+    if relgq_groups is None or age_groups is None:
+        return
+    for name, rule_specs in constraint_specs.items():
+        match = re.fullmatch(r"relgq(\d+)", rule_specs[0])
+        forbidden = _AGE_ZERO_RULES.get(rule_specs[2])
+        if match is None or forbidden is None:
+            continue
+        value = constraints.get((geocode, name))
+        if value is None or int(value[0]) != 0:
+            continue
+        level = (int(match.group(1)),)
+        rows = [pos for pos, g in enumerate(relgq_groups) if g == level]
+        cols = [pos for pos, g in enumerate(age_groups)
+                if set(g) <= forbidden]
+        if rows and cols:
+            index = [np.arange(size) for size in sizes]
+            index[0], index[2] = np.array(rows), np.array(cols)
+            exact[np.ix_(*index)] = 0.0
+
+
+def _dhc_pl94_blocks(geocode, specs, sizes, obs, variance, constraints,
+                     nonnegative, exact, ub):
+    """Condition on pl94_con, the exact published PL94 table for the area.
+
+    The DHC histogram marginalizes onto the PL94 one, so a query's cells
+    split into blocks whose totals are known exactly (`_pl94_blocks`).  What
+    that buys depends on how many cells of a block are still free:
+
+    - a block totalling zero pins every cell in it to zero, which is common
+      in the detailed queries because most PL94 cells are empty;
+    - one free cell is a point mass at the block total;
+    - two are conditioned jointly, so they stay perfectly anti-correlated and
+      always sum to the invariant;
+    - more than two only take the block total as an upper bound.  The exact
+      conditional posterior there is a discrete Gaussian restricted to a
+      lattice hyperplane, which does not factor into per-cell distributions
+      the node graph can sample independently, so the sum is left free.
+    """
+    row = constraints.get((geocode, "pl94_con"))
+    if row is None:
+        return {}
+    pl94 = np.asarray(row, dtype=np.int64).reshape(_PL94_SHAPE)
+    exact_flat, ub_flat = exact.reshape(-1), ub.reshape(-1)
+    prebuilt = {}
+
+    for positions, selector in _pl94_blocks(specs):
+        cells = _block_flat_indices(positions, sizes)
+        # cells already pinned are structural zeros, so they take nothing off
+        # the block total: blocks are disjoint, and nothing else has run yet
+        free = cells[np.isnan(exact_flat[cells])]
+        if free.size == 0:
+            continue
+        total = int(pl94[np.ix_(*selector)].sum())
+        if total == 0 and nonnegative:
+            exact_flat[free] = 0.0
+        elif free.size == 1:
+            exact_flat[free[0]] = total
+        elif free.size == 2:
+            first, second = (int(cell) for cell in free)
+            prebuilt[first], prebuilt[second] = _conditioned_pair(
+                int(obs[first]), int(obs[second]), variance, total, nonnegative)
+        elif nonnegative:
+            ub_flat[free] = np.minimum(ub_flat[free], total)
+    return prebuilt
+
+
+def _pl94_blocks(specs):
+    """Split a DHC query's cells into blocks pl94_con pins the total of.
+
+    Yields (per-axis cell positions, pl94 selector) pairs.  Sex is merged
+    away because PL94 does not resolve it; every other axis is merged only
+    as far as it must be for its blocks to be whole PL94 categories.
+    """
+    per_axis = [
+        _merged_blocks(_DHC_AXIS_GROUPS[axis][s], _PL94_CLASS_OF.get(axis))
+        for axis, s in zip(_DHC_AXES, specs)
+    ]
+    for combination in itertools.product(*per_axis):
+        selector = [None] * len(_PL94_SHAPE)
+        for axis, (_, categories) in zip(_DHC_AXES, combination):
+            if axis in _PL94_AXIS_OF:
+                selector[_PL94_AXIS_OF[axis]] = categories
+        yield tuple(positions for positions, _ in combination), tuple(selector)
+
+
+def _merged_blocks(groups, category_of):
+    """Merge an axis's groups until each block is whole PL94 categories.
+
+    Returns (group positions, category indices) pairs.  An axis PL94 does not
+    resolve merges into one block, as do groups finer than a PL94 category
+    (the two householder levels, say, which PL94 only knows in total).
+    """
+    if category_of is None:
+        return [(tuple(range(len(groups))), ())]
+    blocks = []
+    for position, group in enumerate(groups):
+        positions, categories = [position], {category_of[i] for i in group}
+        disjoint = []
+        for other_positions, other_categories in blocks:
+            if categories & other_categories:
+                positions.extend(other_positions)
+                categories |= other_categories
+            else:
+                disjoint.append((other_positions, other_categories))
+        blocks = disjoint + [(positions, categories)]
+    return [(tuple(sorted(p)), tuple(sorted(c))) for p, c in blocks]
+
+
+def _block_flat_indices(positions, sizes):
+    grids = np.meshgrid(*(np.asarray(p) for p in positions), indexing="ij")
+    return np.ravel_multi_index(tuple(g.ravel() for g in grids), sizes)
 
 
 # ── assembly ─────────────────────────────────────────────────────────────────
@@ -1050,15 +1334,20 @@ def _load_product(spec, product, fips_list, level, queries, root, nonnegative,
         exact_levels == "all" or level in exact_levels)
     con_names = spec["constraints"]
 
-    need_constraints = apply_constraints or exact_total
-    wanted = set(raw_names) | (set(con_names) if need_constraints else set())
-    rows = _collect_rows(root, spec, product, level, fips_list, wanted,
-                         counties=counties)
+    rows = _collect_rows(
+        root, spec, product, level, fips_list, raw_names,
+        constraints=con_names if (apply_constraints or exact_total) else (),
+        counties=counties)
 
     constraints = {}
+    constraint_specs = {}
     if "sign" in rows.columns:
         for r in rows.filter(pl.col("sign").is_not_null()).iter_rows(named=True):
             constraints[(r["geocode"], r["query_name"])] = r["value"]
+            # a constraint's axis specs say what it constrains, and are the
+            # same wherever the row appears
+            constraint_specs.setdefault(
+                r["query_name"], tuple(r[ax] for ax in axes))
         rows = rows.filter(pl.col("sign").is_null())
     dpq = rows.sort("query_name", "geocode")
 
@@ -1097,7 +1386,7 @@ def _load_product(spec, product, fips_list, level, queries, root, nonnegative,
                 continue
             total = int(value[0])
             emit(geocode, "total", ("total",) * len(axes), 0.0,
-                 _exact_count(total, total))
+                 _exact_count(total))
 
     for r in dpq.iter_rows(named=True):
         canonical = canonical_by_raw[r["query_name"]]
@@ -1105,7 +1394,7 @@ def _load_product(spec, product, fips_list, level, queries, root, nonnegative,
             _emit_unit_h1(emit, r, constraints, nonnegative, apply_constraints)
         else:
             _emit_cells(emit, r, canonical, spec, constraints,
-                        nonnegative, apply_constraints)
+                        constraint_specs, nonnegative, apply_constraints)
 
     frame = pd.DataFrame({
         "geoid": pd.array(columns["geoid"], dtype="string"),
@@ -1127,7 +1416,7 @@ def _emit_unit_h1(emit, row, constraints, nonnegative, apply_constraints):
     obs_vac, obs_occ = (int(x) for x in row["value"])
     total = constraints.get((geocode, "total_con"))
     if apply_constraints and total is not None:
-        vac, occ = _conditioned_unit_pair(
+        vac, occ = _conditioned_pair(
             obs_vac, obs_occ, variance, int(total[0]), nonnegative)
     else:
         sd = math.sqrt(variance)
@@ -1138,7 +1427,7 @@ def _emit_unit_h1(emit, row, constraints, nonnegative, apply_constraints):
     emit(geocode, "h1", ("occupied",), variance, occ)
 
 
-def _emit_cells(emit, row, canonical, spec, constraints,
+def _emit_cells(emit, row, canonical, spec, constraints, constraint_specs,
                 nonnegative, apply_constraints):
     axes = spec["axes"]
     geocode = row["geocode"]
@@ -1154,32 +1443,36 @@ def _emit_cells(emit, row, canonical, spec, constraints,
             f"query {row['query_name']!r} at {geocode!r}: "
             f"{len(values)} cells do not match axis sizes {sizes}")
 
-    base_lb = 0 if nonnegative else None
+    # Per-cell posterior plan: a pinned true value, an interval, or (for cells
+    # a constraint ties to one another) a value already built jointly.
+    exact = np.full(sizes, np.nan)
+    lb = np.full(sizes, 0.0 if nonnegative else -np.inf)
+    ub = np.full(sizes, np.inf)
+    prebuilt = {}
+    if apply_constraints:
+        if spec["rules"] == "pl94_person":
+            _pl94_person_rules(geocode, specs, canonical, constraints,
+                               exact, lb, ub)
+        elif spec["rules"] == "dhc_person":
+            prebuilt = _dhc_person_rules(
+                geocode, specs, sizes, values, variance, constraints,
+                constraint_specs, nonnegative, exact, lb, ub)
 
-    hhgq_bounds = None
-    structural_zero = False
-    if apply_constraints and spec["rules"] == "pl94_person":
-        hhgq_bounds = _hhgq_axis_bounds(geocode, specs, constraints)
-        nurse = constraints.get((geocode, "nurse_nva_0_con"))
-        structural_zero = (
-            canonical == "detailed"
-            and nurse is not None and int(nurse[0]) == 0)
-
+    exact_flat, lb_flat, ub_flat = (a.reshape(-1) for a in (exact, lb, ub))
     for flat, idx in enumerate(itertools.product(*(range(s) for s in sizes))):
         obs = int(values[flat])
         labels = tuple(axis_labels[a][i] for a, i in enumerate(idx))
-        if structural_zero and idx[0] == 3 and idx[1] == 0:
-            # under-18 residents of nursing facilities: exactly zero
-            emit(geocode, canonical, labels, variance, _exact_count(obs, 0))
-            continue
-        lb, ub = base_lb, None
-        if hhgq_bounds is not None:
-            g_lb, g_ub = hhgq_bounds[idx[0]]
-            ub = g_ub
-            if g_lb is not None:
-                lb = max(lb or 0, g_lb)
-        emit(geocode, canonical, labels, variance,
-             _noisy_count(obs, sd, lb=lb, ub=ub))
+        if flat in prebuilt:
+            value = prebuilt[flat]
+        elif not math.isnan(exact_flat[flat]):
+            value = _exact_count(int(exact_flat[flat]))
+        else:
+            low, high = lb_flat[flat], ub_flat[flat]
+            value = _noisy_count(
+                obs, sd,
+                lb=None if low == -np.inf else int(low),
+                ub=None if high == np.inf else int(high))
+        emit(geocode, canonical, labels, variance, value)
 
 
 def _hhgq_axis_bounds(geocode, specs, constraints):

@@ -22,9 +22,15 @@ from noisyvalue.census import (
     RELSHIP_GQ8_LEVELS,
     RELSHIP_LEVELS,
     SEX_LEVELS,
+    _DHC_AXIS_GROUPS,
     _DHC_PERSON,
+    _PL94_CLASS_OF,
     _RELGQ_GROUPS,
     _axis_specs,
+    _block_flat_indices,
+    _dhc_structural_zeros,
+    _merged_blocks,
+    _pl94_blocks,
     _person_axis_specs,
     dhc_queries,
     get_dhc,
@@ -361,7 +367,11 @@ def test_get_pl94_real_block_groups_requires_block_group_geography(nmf_root):
 
 @pytest.fixture
 def dhc_root(tmp_path):
-    """Two Vermont counties of DHC person measurements, county-partitioned."""
+    """Two Vermont counties of DHC person measurements, county-partitioned.
+
+    No constraint rows, so `get_dhc` reads these as plain measurements; the
+    `dhc_constrained_root` fixture adds them.
+    """
     root = str(tmp_path / "dhc")
 
     def county_rows(geocode, sexhisp, age3):
@@ -386,6 +396,178 @@ def dhc_root(tmp_path):
                f"State=050/County={county}/part-0.parquet",
                pl.DataFrame(county_rows(geocode, sexhisp, age3)))
     return root
+
+
+DHC_COUNTY = "05010009"
+
+
+@pytest.fixture
+def dhc_constrained_root(tmp_path):
+    """One county whose DHC measurements come with their constraint rows.
+
+    The PL94 invariant is deliberately lopsided: nobody in group quarters at
+    all except 40 people in college housing, all of them hispanic, so blocks
+    of every size show up in one small fixture.
+    """
+    root = str(tmp_path / "dhc")
+
+    # pl94_con: hhgq(8) x votingage(2) x hispanic(2) x cenrace(63), all of it
+    # white for simplicity.
+    pl94 = np.zeros((8, 2, 2, 63), dtype=np.int64)
+    pl94[0, 0, 0, 0] = 200          # household, under 18, not hispanic
+    pl94[0, 1, 0, 0] = 700          # household, voting age, not hispanic
+    pl94[0, 1, 1, 0] = 60           # household, voting age, hispanic
+    pl94[5, 1, 1, 0] = 40           # college housing, voting age, hispanic
+
+    dpq = pl.DataFrame({
+        "geocode": [DHC_COUNTY] * 3,
+        "query_name": ["hispanic * sex_dpq", "age_18_64_116 * sex_dpq",
+                       "sex * relgq_4_groups_dpq"],
+        "relgq": ["*", "*", "relgq_4_groups"],
+        "sex": ["sex", "sex", "sex"],
+        "age": ["*", "age_18_64_116", "*"],
+        "hispanic": ["hispanic", "*", "*"],
+        "cenrace": ["*", "*", "*"],
+        "query_shape": [[1, 2, 1, 2, 1], [1, 2, 3, 1, 1], [4, 2, 1, 1, 1]],
+        "value": [[460, 44, 450, 62],
+                  [95, 300, 210, 110, 290, 195],
+                  [260, 240, 250, 230, 3, -2, 18, 25]],
+        "variance": pl.Series([16.0, 16.0, 16.0], dtype=pl.Float32),
+    })
+    _write(f"{root}/US_DHCP_PROD/County.parquet/DPQuery/"
+           f"State=050/County={DHC_COUNTY}/part-0.parquet", dpq)
+
+    con = pl.DataFrame({
+        "geocode": [DHC_COUNTY] * 4,
+        "query_name": ["pl94_con", "hhgq_total_lb_con", "hhgq_total_ub_con",
+                       "relgq0_lt15_con"],
+        "sign": ["=", ">=", "<=", "="],
+        "relgq": ["hhgq8lev", "gqlevels", "gqlevels", "relgq0"],
+        "sex": ["*", "*", "*", "*"],
+        "age": ["votingage", "*", "*", "age_lessthan15"],
+        "hispanic": ["hispanic", "*", "*", "*"],
+        "cenrace": ["cenrace", "*", "*", "*"],
+        "query_shape": [[8, 1, 2, 2, 63], [25, 1, 1, 1, 1],
+                        [25, 1, 1, 1, 1], [1, 1, 1, 1, 1]],
+        "value": [list(pl94.ravel()),
+                  [0] * 25,
+                  [999999] + [0] * 15 + [99999] + [0] * 8,
+                  [0]],
+        "variance": pl.Series([0.0] * 4, dtype=pl.Float32),
+    })
+    _write(f"{root}/US_DHCP_PROD/County.parquet/Constraint/"
+           f"State=050/County={DHC_COUNTY}/part-0.parquet", con)
+    return root
+
+
+def _draws(values, n=200, rng=5):
+    batches = sample_noisy_values(*values, n=n, rng=rng)
+    return [b.draws for b in batches]
+
+
+def test_get_dhc_pairs_sum_to_the_pl94_invariant(dhc_constrained_root):
+    df = get_dhc("county", "sex*hispanic", state="VT",
+                 root=dhc_constrained_root)
+    # PL94 pins 900 not-hispanic (200 + 700) and 100 hispanic (60 + 40)
+    for hispanic, invariant in (("not_hispanic", 900), ("hispanic", 100)):
+        cells = list(df[df["hispanic"] == hispanic]["value"])
+        male, female = _draws(cells)
+        assert np.all(male + female == invariant)
+        # conditioning halves each cell's variance: sd 4 -> 4/sqrt(2)
+        assert 2.0 < male.std() < 3.6
+
+
+def test_get_dhc_leaves_blocks_of_three_or_more_free(dhc_constrained_root):
+    df = get_dhc("county", "sex*age_18_64_116", state="VT",
+                 root=dhc_constrained_root)
+    under_18 = list(df[df["age"] == "0-17"]["value"])
+    male, female = _draws(under_18)
+    assert np.all(male + female == 200)          # pinned pair
+
+    adults = list(df[df["age"] != "0-17"]["value"])
+    total = sum(_draws(adults))
+    assert len(np.unique(total)) > 1             # four free cells, sum free
+    # ... but each still cannot exceed its block total of 800
+    assert all(np.all(d <= 800) for d in _draws(adults))
+
+
+def test_get_dhc_pins_cells_a_zero_pl94_block_empties(dhc_constrained_root):
+    df = get_dhc("county", "relgq_4_groups*sex", state="VT",
+                 root=dhc_constrained_root)
+    institutional = list(df[df["relgq"] == "institutional_gq"]["value"])
+    assert [int(v) for v in institutional] == [0, 0]
+    assert all(np.all(d == 0) for d in _draws(institutional))
+
+    # the only group quarters PL94 allows are the 40 in college housing
+    noninstitutional = list(df[df["relgq"] == "noninstitutional_gq"]["value"])
+    male, female = _draws(noninstitutional)
+    assert np.all(male + female == 40)
+
+    # householder and other-household members are four cells sharing the
+    # household total, so they stay free
+    household = list(df[df["relgq"].isin(
+        ("householder", "other_household_member"))]["value"])
+    assert len(np.unique(sum(_draws(household)))) > 1
+
+
+def test_dhc_structural_zeros_pin_the_ages_a_rule_forbids():
+    specs = ("relgq", "*", "age_40_groups", "*", "*")
+    sizes = (42, 1, 40, 1, 1)
+    exact = np.full(sizes, np.nan)
+    _dhc_structural_zeros(
+        "geo", specs, sizes,
+        {("geo", "relgq0_lt15_con"): [0], ("geo", "relgq16_gt20_con"): [0]},
+        {"relgq0_lt15_con": ("relgq0", "*", "age_lessthan15", "*", "*"),
+         "relgq16_gt20_con": ("relgq16", "*", "age_gt20", "*", "*")},
+        exact)
+    pinned = ~np.isnan(exact)
+    # age_40_groups resolves 0-17 as single years, then 18-19, 20-24, ...
+    assert np.all(pinned[0, 0, :15]) and not pinned[0, 0, 15:].any()
+    assert np.all(exact[0, 0, :15] == 0)
+    # foster children are 20 or younger: everything from the 20-24 group up is
+    # pinned, and the group straddling 20 is not
+    assert not pinned[16, 0, :20].any()
+    assert np.all(pinned[16, 0, 20:])
+    # no other relationship level is touched
+    assert not pinned[1].any() and not pinned[17].any()
+
+
+def test_dhc_blocks_merge_only_as_far_as_pl94_resolves():
+    # PL94 knows the two householder levels only in total, so they merge; the
+    # GQ groups are unions of PL94 categories and stay apart
+    blocks = _merged_blocks(_DHC_AXIS_GROUPS["relgq"]["relgq_4_groups"],
+                            _PL94_CLASS_OF["relgq"])
+    assert sorted(positions for positions, _ in blocks) == [
+        (0, 1), (2,), (3,)]
+    # sex has no PL94 counterpart, so its cells always share one block
+    assert _merged_blocks(_DHC_AXIS_GROUPS["sex"]["sex"], None) == [
+        ((0, 1), ())]
+    # every age binning splits at 18, so voting age separates cleanly
+    for spec in ("age_18_64_116", "age_10_groups", "age_38_groups",
+                 "age_40_groups", "detailed"):
+        blocks = _merged_blocks(_DHC_AXIS_GROUPS["age"][spec],
+                                _PL94_CLASS_OF["age"])
+        assert sorted(categories for _, categories in blocks) == [(0,), (1,)]
+
+
+def test_dhc_block_totals_cover_every_cell_exactly_once():
+    specs = ("relgq_4_groups", "sex", "age_18_64_116", "*", "*")
+    sizes = (4, 2, 3, 1, 1)
+    seen = np.zeros(sizes, dtype=int).reshape(-1)
+    for positions, selector in _pl94_blocks(specs):
+        seen[_block_flat_indices(positions, sizes)] += 1
+        assert all(part is not None for part in selector)
+    assert np.all(seen == 1)
+
+
+def test_get_dhc_without_constraints_ignores_the_invariants(
+        dhc_constrained_root):
+    df = get_dhc("county", "sex*hispanic", state="VT",
+                 root=dhc_constrained_root, apply_constraints=False)
+    cells = list(df[df["hispanic"] == "not_hispanic"]["value"])
+    male, female = _draws(cells)
+    assert len(np.unique(male + female)) > 1
+    assert 3.0 < male.std() < 5.0                # full sd 4, not halved
 
 
 def test_get_dhc_tidy_shape_and_labels(dhc_root):
@@ -643,3 +825,58 @@ def test_real_dhc_county_filter_matches_a_full_state_read():
     assert set(one["geoid"]) == {"50009"}
     expected = whole[whole["geoid"] == "50009"]
     assert [int(v) for v in one["value"]] == [int(v) for v in expected["value"]]
+
+
+@requires_dhc_us
+def test_real_dhc_sex_cells_are_pinned_by_the_pl94_invariant():
+    df = get_dhc("us", "sex*hispanic")
+    cells = list(df["value"])
+    batches = sample_noisy_values(*cells, n=100, rng=3)
+
+    # PL94 was an invariant of the DHC run, so the sexes have to add back up
+    # to the published national count in every draw
+    assert np.all(sum(b.draws for b in batches) == 331_449_281)
+    for hispanic in ("not_hispanic", "hispanic"):
+        pair = [b for b, h in zip(batches, df["hispanic"]) if h == hispanic]
+        assert len(np.unique(pair[0].draws + pair[1].draws)) == 1
+
+    # conditioning a pair on its exact sum halves each cell's variance
+    raw_sd = math.sqrt(float(df["variance"].iloc[0]))
+    assert abs(batches[0].draws.std() / raw_sd - 1 / math.sqrt(2)) < 0.2
+
+    loose = get_dhc("us", "sex*hispanic", apply_constraints=False)
+    batches = sample_noisy_values(*list(loose["value"]), n=100, rng=3)
+    assert len(np.unique(sum(b.draws for b in batches))) > 1
+
+
+@requires_dhc_vt
+def test_real_dhc_pl94_invariant_pins_empty_categories():
+    df = get_dhc("county", "relgq_4_groups*sex", state="VT", county=9)
+    # PL94 records no institutional group quarters in Essex County, which
+    # empties both of its cells whatever the measurements say
+    institutional = df[df["relgq"] == "institutional_gq"]["value"]
+    assert [int(v) for v in institutional] == [0, 0]
+    for value in institutional:
+        assert np.all(value.sample(50, rng=4).draws == 0)
+
+
+@requires_dhc_vt
+def test_real_dhc_relgq_age_rules_empty_impossible_cells():
+    df = get_dhc("county", "relgq*sex*age_40_groups*hispanic*cenrace",
+                 state="VT", county=9)
+
+    # nobody under 15 keeps their own house
+    minors = df[(df["relgq"] == "householder_alone") & (df["age"] == "14")]
+    assert len(minors) == 2 * 2 * 63
+    for value in list(minors["value"])[:20]:
+        assert np.all(value.sample(20, rng=6).draws == 0)
+
+    # and PL94 says the county has no prison, so those cells go too
+    prison = df[df["relgq"] == "state_prison"]
+    for value in list(prison["value"])[:20]:
+        assert np.all(value.sample(20, rng=6).draws == 0)
+
+    live = df[(df["relgq"] == "biological_child") & (df["age"] == "5")
+              & (df["cenrace"] == "white")
+              & (df["hispanic"] == "not_hispanic")]["value"]
+    assert any(v.sample(200, rng=6).draws.std() > 0 for v in live)
