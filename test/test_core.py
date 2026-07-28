@@ -559,3 +559,34 @@ def test_noisyint_discrete_gaussian_noisy_scale_propagates_uncertainty():
 
     assert draws.mean() == pytest.approx(0.0, abs=0.5)
     assert draws.std() == pytest.approx(10.0, abs=1.5)
+
+
+def test_mixing_noisy_types_in_one_expression_keeps_every_operand_noisy():
+    """A chain of three or more additions used to silently drop operands.
+
+    `bin_op` lifted the right operand with the left's own class, so once the
+    running total had promoted to NoisyFloat, each further NoisyInt was
+    treated as a plain scalar and sympified down to its observation. The sum
+    still looked right; it just had no uncertainty from anything past the
+    second term.
+    """
+    parts = [NoisyInt.discrete_gaussian(5, obs=obs) for obs in (10, 20, 30, 40)]
+    total = parts[0]
+    for part in parts[1:]:
+        total = total + part
+
+    assert len(total.expr.free_symbols) == len(parts)
+
+    batches = sample_noisy_values(total, *parts, n=300, rng=4)
+    assert np.array_equal(batches[0].draws, sum(b.draws for b in batches[1:]))
+    assert batches[0].draws.std() > 5
+
+
+def test_a_noisy_float_times_a_noisy_int_keeps_both_posteriors():
+    scale = NoisyFloat.normal(2.0, 0.5, rng=1)
+    count = NoisyInt.discrete_gaussian(5, obs=100)
+    product = scale * count
+
+    assert len(product.expr.free_symbols) == 2
+    a, b, c = sample_noisy_values(product, scale, count, n=300, rng=6)
+    assert np.allclose(a.draws, b.draws * c.draws)

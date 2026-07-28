@@ -171,7 +171,12 @@ class NoisyValue:
         return self.sample(n=n, rng=rng).credible_interval(p)
 
     def bin_op(self, x, out_cls, obs_op, expr_op=None, rev=False):
-        x = type(self).lift(x)
+        # Accept any noisy value, not just this class's own. Lifting with the
+        # default `accept` would treat a NoisyInt operand of a NoisyFloat as a
+        # plain scalar and sympify it to its observation, silently discarding
+        # its posterior -- which is what a chain of three or more NoisyInt
+        # additions used to do to everything past the second term.
+        x = type(self).lift(x, accept=NoisyValue)
         lhs = x if rev else self
         rhs = self if rev else x
 
