@@ -461,7 +461,7 @@ class ArraySerializer(ContainerSerializer):
     def from_dict(cls, d, built):
         arr = np.empty(tuple(d["shape"]), dtype=object)
         for i, edict in enumerate(d["elements"]):
-            arr.flat[i] = container_from_json(NoisyValueSerializer, edict, built)
+            arr.flat[i] = container_from_dict(NoisyValueSerializer, edict, built)
         return arr
 
 
@@ -495,7 +495,7 @@ class DataFrameSerializer(ContainerSerializer):
     @classmethod
     def from_dict(cls, d, built):
         columns = {
-            name: container_from_json(SeriesSerializer, col, built)
+            name: container_from_dict(SeriesSerializer, col, built)
             for name, col in d["columns"].items()
         }
         return pd.DataFrame(columns)
@@ -550,15 +550,15 @@ class TupleSerializer(ContainerSerializer):
     @classmethod
     def from_dict(cls, d, built):
         return tuple(
-            container_from_json(ContainerSerializer, item, built) for item in d["items"]
+            container_from_dict(ContainerSerializer, item, built) for item in d["items"]
         )
 
 
-def container_from_json(accept, d, built):
+def container_from_dict(accept, d, built):
     cls = serializer_for_tag(accept, d["kind"])
     return cls.from_dict(d, built)
 
-def node_from_json(d, deps, name_map):
+def node_from_dict(d, deps, name_map):
     cls = serializer_for_tag(NodeSerializer, d["kind"])
     return cls.from_dict(d, deps, name_map)
 
@@ -651,8 +651,8 @@ def load(path):
         nd = nodes_dict[old_name]
         deps = [built[dep_name] for dep_name in nd.get("deps", [])]
 
-        node = node_from_json(nd, deps, name_map)
+        node = node_from_dict(nd, deps, name_map)
         name_map[old_name] = node.expr
         built[old_name] = node
 
-    return container_from_json(ContainerSerializer, doc["container"], built)
+    return container_from_dict(ContainerSerializer, doc["container"], built)
