@@ -151,7 +151,7 @@ def test_saved_file_is_valid_json_with_expected_keys(tmp_path):
     assert doc["version"] == 6
     assert "nodes" in doc
     assert "container" in doc
-    assert doc["container"]["kind"] == "noisy_float"
+    assert doc["container"]["tag"] == "noisy_float"
 
 
 def test_load_rejects_unknown_version(tmp_path):
@@ -267,8 +267,8 @@ def test_contingency_table_kind_spot_check(tmp_path):
     p = tmp_path / "table.json"
     save(p, tbl)
     doc = json.loads(p.read_text())
-    assert doc["container"]["kind"] == "contingency_table"
-    assert doc["container"]["array"]["kind"] == "array"
+    assert doc["container"]["tag"] == "contingency_table"
+    assert doc["container"]["array"]["tag"] == "array"
 
 
 def test_table_kind_spot_check(tmp_path):
@@ -279,6 +279,6 @@ def test_table_kind_spot_check(tmp_path):
     p = tmp_path / "table.json"
     save(p, df)
     doc = json.loads(p.read_text())
-    assert doc["container"]["kind"] == "dataframe"
-    assert doc["container"]["columns"]["label"]["kind"] == "plain_series"
-    assert doc["container"]["columns"]["value"]["kind"] == "float_series"
+    assert doc["container"]["tag"] == "dataframe"
+    assert doc["container"]["columns"]["label"]["tag"] == "plain_series"
+    assert doc["container"]["columns"]["value"]["tag"] == "float_series"

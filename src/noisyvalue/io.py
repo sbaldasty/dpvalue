@@ -227,7 +227,7 @@ class SympyGreaterThanSerializer(SympyExprSerializer):
 class NodeSerializer(Serializer):
     @classmethod
     def to_dict(cls, node):
-        return {"kind": cls.tag, "deps": [_node_name(dep) for dep in node.deps]}
+        return {"tag": cls.tag, "deps": [_node_name(dep) for dep in node.deps]}
 
     @classmethod
     def from_dict(cls, d, deps, name_map):
@@ -332,7 +332,7 @@ class PlainSeriesSerializer(SeriesSerializer):
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.tag, "dtype": str(obj.dtype), "values": obj.tolist()}
+        return {"tag": cls.tag, "dtype": str(obj.dtype), "values": obj.tolist()}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -370,7 +370,7 @@ class NoisySeriesSerializer(SeriesSerializer):
             else {"obs": arr[i]._obs, "root": _node_name(arr[i]._root)}
             for i in range(len(arr))
         ]
-        return {"kind": cls.tag, "elements": elements}
+        return {"tag": cls.tag, "elements": elements}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -409,7 +409,7 @@ class NoisyValueSerializer(ContainerSerializer):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.tag,
+            "tag": cls.tag,
             "obs": obj._obs,
             "root": _node_name(obj._root),
         }
@@ -452,7 +452,7 @@ class ArraySerializer(ContainerSerializer):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.tag,
+            "tag": cls.tag,
             "shape": list(obj.shape),
             "elements": [serializer_for_obj(v, accept=NoisyValueSerializer).to_dict(v) for v in obj.flat]
         }
@@ -486,7 +486,7 @@ class DataFrameSerializer(ContainerSerializer):
     @classmethod
     def to_dict(cls, obj):
         return {
-            "kind": cls.tag,
+            "tag": cls.tag,
             "columns": {
                 col: serializer_for_obj(obj[col], accept=SeriesSerializer).to_dict(obj[col]) for col in obj.columns
             },
@@ -515,7 +515,7 @@ class ContingencyTableSerializer(ContainerSerializer):
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.tag, "array": ArraySerializer.to_dict(obj.tbl)}
+        return {"tag": cls.tag, "array": ArraySerializer.to_dict(obj.tbl)}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -545,7 +545,7 @@ class TupleSerializer(ContainerSerializer):
 
     @classmethod
     def to_dict(cls, obj):
-        return {"kind": cls.tag, "items": [cls._item_serializer(item).to_dict(item) for item in obj]}
+        return {"tag": cls.tag, "items": [cls._item_serializer(item).to_dict(item) for item in obj]}
 
     @classmethod
     def from_dict(cls, d, built):
@@ -555,11 +555,11 @@ class TupleSerializer(ContainerSerializer):
 
 
 def container_from_dict(accept, d, built):
-    cls = serializer_for_tag(accept, d["kind"])
+    cls = serializer_for_tag(accept, d["tag"])
     return cls.from_dict(d, built)
 
 def node_from_dict(d, deps, name_map):
-    cls = serializer_for_tag(NodeSerializer, d["kind"])
+    cls = serializer_for_tag(NodeSerializer, d["tag"])
     return cls.from_dict(d, deps, name_map)
 
 def node_to_dict(node):
@@ -618,7 +618,14 @@ def save(path, container):
         json.dump(doc, f, indent=2)
 
 
-def _topo_sort(nodes_dict):
+def load(path):
+    """Load a container saved by save()."""
+    with open(path) as f:
+        doc = json.load(f)
+    if doc.get("version") != VERSION:
+        raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
+
+    nodes_dict = doc["nodes"]
     visited = set()
     order = []
 
@@ -632,18 +639,7 @@ def _topo_sort(nodes_dict):
 
     for name in nodes_dict:
         visit(name)
-    return order
 
-
-def load(path):
-    """Load a container saved by save()."""
-    with open(path) as f:
-        doc = json.load(f)
-    if doc.get("version") != VERSION:
-        raise ValueError(f"Unsupported file version: {doc.get('version')!r}")
-
-    nodes_dict = doc["nodes"]
-    order = _topo_sort(nodes_dict)
     name_map = {}  # old symbol name str -> new Symbol
     built = {}  # old symbol name str -> Node
 
