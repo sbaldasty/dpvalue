@@ -27,6 +27,7 @@ noisyvalue_init <- function(venv = ".venv", src = "src") {
   .noisyvalue_env$core <- reticulate::import("noisyvalue.core", convert = FALSE)
   .noisyvalue_env$io <- reticulate::import("noisyvalue.io", convert = FALSE)
   .noisyvalue_env$pdext <- reticulate::import("noisyvalue.pandas_ext", convert = FALSE)
+  .noisyvalue_env$census <- reticulate::import("noisyvalue.census", convert = FALSE)
 
   invisible(TRUE)
 }

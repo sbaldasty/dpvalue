@@ -145,7 +145,13 @@ is.na.noisy_vec <- function(x) {
 
 #' @export
 c.noisy_vec <- function(...) {
-  parts <- list(...)
+  # unname(): a *named* list handed to `.nv("builtins")$list()` below would
+  # reticulate-convert to a Python dict instead of a list, and Python's
+  # `list(dict)` yields the dict's keys, not its values -- silently
+  # replacing every element with its argument name. Bites easily via
+  # `do.call(c, x)` where `x` came from something like `split()`/`lapply()`
+  # over named groups.
+  parts <- unname(list(...))
   if (!all(vapply(parts, inherits, logical(1), "noisy_vec"))) {
     stop("c() on a noisy_vec only supports combining noisy_vec objects", call. = FALSE)
   }
@@ -177,6 +183,16 @@ Ops.noisy_vec <- function(e1, e2) {
 
   py1 <- if (inherits(e1, "noisy_vec")) .py(e1) else e1
   py2 <- if (missing(e2)) NULL else if (inherits(e2, "noisy_vec")) .py(e2) else e2
+
+  # Two pandas Series align by index *label*, not position -- two noisy_vec
+  # values sliced from different tibbles/filters can carry unrelated index
+  # labels even at the same length, which silently produces NA at every
+  # position instead of erroring. R vector arithmetic is positional, so
+  # reset both to a shared RangeIndex before combining to match that.
+  if (!is.null(py2) && inherits(py1, "pandas.Series") && inherits(py2, "pandas.Series")) {
+    py1 <- py1$reset_index(drop = TRUE)
+    py2 <- py2$reset_index(drop = TRUE)
+  }
 
   fn <- get(op, envir = baseenv())
   raw <- if (is.null(py2)) fn(py1) else fn(py1, py2)
