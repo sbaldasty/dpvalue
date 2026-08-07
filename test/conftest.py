@@ -45,4 +45,4 @@ def binomial(n, p):
 
 
 def discrete_gaussian(scale):
-    return DiscreteGaussianNode.create(loc=_to_expr(0), scale=_to_expr(scale))
+    return DiscreteGaussianNode.create(loc=_to_expr(0), scale=_to_expr(scale), low=-sp.oo, high=sp.oo)

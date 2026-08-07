@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 import sympy as sp
 
-from sympy import Abs, Add, And, Eq, Mul, Ne, Not, Or, Pow, Piecewise, Symbol, exp, log, floor
+from sympy import Abs, Add, And, Eq, Float, Mul, Ne, Not, Or, Pow, Piecewise, Rational, Symbol, exp, log, floor
+from sympy.core.numbers import Infinity, NaN, NegativeInfinity
 from sympy.core.relational import GreaterThan, LessThan, StrictGreaterThan, StrictLessThan
 from sympy.functions.elementary.piecewise import ExprCondPair
 from sympy.logic.boolalg import BooleanAtom
@@ -14,7 +15,7 @@ from . import util
 from .analysis import NoisyContingencyTable
 from .consolidate import consolidate
 from .core import NoisyFloat, NoisyInt, NoisyBool
-from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, LatentNode, NormalNode
+from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, DiscreteLaplaceNode, LatentNode, NormalNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 
@@ -68,7 +69,7 @@ class SympySymbolSerializer(SympySerializer):
 
 class SympyNaNSerializer(SympySerializer):
     tag = "NaN"
-    matches_type = sp.core.numbers.NaN
+    matches_type = NaN
 
     @classmethod
     def to_dict(cls, obj):
@@ -77,6 +78,32 @@ class SympyNaNSerializer(SympySerializer):
     @classmethod
     def from_dict(cls, d, name_map):
         return sp.nan
+
+
+class SympyInfinitySerializer(SympySerializer):
+    tag = "Infinity"
+    matches_type = Infinity
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        return sp.oo
+
+
+class SympyNegativeInfinitySerializer(SympySerializer):
+    tag = "NegativeInfinity"
+    matches_type = NegativeInfinity
+
+    @classmethod
+    def to_dict(cls, obj):
+        return {"tag": cls.tag}
+
+    @classmethod
+    def from_dict(cls, d, name_map):
+        return -sp.oo
 
 
 class SympyBooleanSerializer(SympySerializer):
@@ -94,7 +121,7 @@ class SympyBooleanSerializer(SympySerializer):
 
 class SympyFloatSerializer(SympySerializer):
     tag = "Float"
-    matches_type = sp.Float
+    matches_type = Float
 
     @classmethod
     def to_dict(cls, obj):
@@ -102,12 +129,12 @@ class SympyFloatSerializer(SympySerializer):
 
     @classmethod
     def from_dict(cls, d, name_map):
-        return sp.Float(d["value"], precision=d["precision"])
+        return Float(d["value"], precision=d["precision"])
 
 
 class SympyRationalSerializer(SympySerializer):
     tag = "Rational"
-    matches_type = sp.Rational
+    matches_type = Rational
 
     @classmethod
     def to_dict(cls, obj):
@@ -115,7 +142,7 @@ class SympyRationalSerializer(SympySerializer):
 
     @classmethod
     def from_dict(cls, d, name_map):
-        return sp.Rational(d["p"], d["q"])
+        return Rational(d["p"], d["q"])
 
 
 class SympyExprSerializer(SympySerializer):
@@ -288,6 +315,11 @@ class BinomialNodeSerializer(NoiseNodeSerializer):
 class DiscreteGaussianNodeSerializer(NoiseNodeSerializer):
     tag = "discrete_gaussian"
     matches_type = DiscreteGaussianNode
+
+
+class DiscreteLaplaceNodeSerializer(NoiseNodeSerializer):
+    tag = "discrete_laplace"
+    matches_type = DiscreteLaplaceNode
 
 
 # ----------------------------------------------------------------------------

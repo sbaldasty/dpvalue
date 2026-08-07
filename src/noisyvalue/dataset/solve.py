@@ -33,7 +33,6 @@ import sympy as sp
 from ..core import NoisyInt
 from ..graph import DerivedNode
 from ..graph import DiscreteGaussianNode
-from ..graph import TruncatedDiscreteGaussianNode
 from .evidence import BoundedHistogram, ExactHistogram, ZeroRegion
 
 
@@ -75,13 +74,14 @@ class DiscreteGaussianFamily(NoiseFamily):
     name = "discrete gaussian"
 
     # A bound this far outside the posterior's centre is not merely unlikely
-    # to bind, it is *provably* inert: `TruncatedDiscreteGaussianNode._draw`
-    # only ever puts support on a grid of max(50, 6 sd) either side, so a
-    # bound beyond that leaves the sampled distribution bit-for-bit unchanged.
-    # Dropping it keeps the cheaper untruncated node.  This matters because
-    # evidence is applied generically -- a query that marginalizes an axis
-    # away picks up the sum of every category bound on it, a real but useless
-    # number a per-dataset rule would simply not have bothered to compute.
+    # to bind, it is *provably* inert: `DiscreteGaussianNode._draw` only ever
+    # puts support on a grid of max(50, 6 sd) either side, so a bound beyond
+    # that leaves the sampled distribution bit-for-bit unchanged. Dropping it
+    # keeps the node's params free of symbols, which skips the (small) bound
+    # substitution cost at sample time.  This matters because evidence is
+    # applied generically -- a query that marginalizes an axis away picks up
+    # the sum of every category bound on it, a real but useless number a
+    # per-dataset rule would simply not have bothered to compute.
     INERT_SDS = 8.0
     INERT_FLOOR = 60.0
 
@@ -91,14 +91,11 @@ class DiscreteGaussianFamily(NoiseFamily):
         if lo is not None and hi is not None and lo == hi:
             return exact_count(lo)
         lo, hi = self._drop_inert(obs, sd, lo, hi)
-        if lo is None and hi is None:
-            node = DiscreteGaussianNode.create(loc=sp.Integer(0), scale=sp.Float(sd))
-        else:
-            # theta = obs - eps lies in [lo, hi] iff eps lies in [obs-hi, obs-lo].
-            low = -sp.oo if hi is None else sp.Integer(obs - int(hi))
-            high = sp.oo if lo is None else sp.Integer(obs - int(lo))
-            node = TruncatedDiscreteGaussianNode.create(
-                loc=sp.Integer(0), scale=sp.Float(sd), low=low, high=high)
+        # theta = obs - eps lies in [lo, hi] iff eps lies in [obs-hi, obs-lo].
+        low = -sp.oo if hi is None else sp.Integer(obs - int(hi))
+        high = sp.oo if lo is None else sp.Integer(obs - int(lo))
+        node = DiscreteGaussianNode.create(
+            loc=sp.Integer(0), scale=sp.Float(sd), low=low, high=high)
         return NoisyInt(obs, DerivedNode(sp.Integer(obs) - node.expr, deps=(node,)))
 
     def _drop_inert(self, obs, sd, lo, hi):
@@ -128,12 +125,9 @@ class DiscreteGaussianFamily(NoiseFamily):
         obs_a, obs_b, total = int(obs_a), int(obs_b), int(total)
         scale = sp.sqrt(sp.Float(float(variance)) / 2)
         delta = sp.Rational(obs_a + obs_b - total, 2)
-        if nonnegative:
-            node = TruncatedDiscreteGaussianNode.create(
-                loc=delta, scale=scale,
-                low=sp.Integer(obs_a - total), high=sp.Integer(obs_a))
-        else:
-            node = DiscreteGaussianNode.create(loc=delta, scale=scale)
+        low = sp.Integer(obs_a - total) if nonnegative else -sp.oo
+        high = sp.Integer(obs_a) if nonnegative else sp.oo
+        node = DiscreteGaussianNode.create(loc=delta, scale=scale, low=low, high=high)
         a_root = DerivedNode(sp.Integer(obs_a) - node.expr, deps=(node,))
         b_root = DerivedNode(sp.Integer(total) - a_root.expr, deps=(a_root,))
         return NoisyInt(obs_a, a_root), NoisyInt(obs_b, b_root)

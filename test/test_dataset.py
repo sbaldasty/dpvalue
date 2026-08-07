@@ -28,8 +28,8 @@ from noisyvalue.dataset import (
     solve,
 )
 from noisyvalue.dataset.solve import build_values
-from noisyvalue.graph import (DiscreteGaussianNode, NoiseNode,
-                              TruncatedDiscreteGaussianNode)
+from noisyvalue.graph import DiscreteGaussianNode, NoiseNode
+from sympy import oo
 
 
 # ── partitions ───────────────────────────────────────────────────────────────
@@ -371,12 +371,17 @@ def test_a_bound_outside_the_sampled_support_is_dropped_as_inert():
                             hi=np.array([[10 ** 9]]))
     _, values = _cells(universe, ("*", "*"), [500], [huge])
     # 0 and 10**9 are both hundreds of sd away, so neither can bind
-    assert isinstance(_noise(values[0]), DiscreteGaussianNode)
+    node = _noise(values[0])
+    assert isinstance(node, DiscreteGaussianNode)
+    assert node.low == -oo and node.high == oo
 
     tight = BoundedHistogram(marginal_coarsening(universe, {}),
                              hi=np.array([[505]]))
     _, values = _cells(universe, ("*", "*"), [500], [tight])
-    assert isinstance(_noise(values[0]), TruncatedDiscreteGaussianNode)
+    node = _noise(values[0])
+    assert isinstance(node, DiscreteGaussianNode)
+    # theta <= 505 becomes a lower bound in eps-space (eps = obs - theta)
+    assert node.low != -oo
     assert values[0].sample(400, rng=1).draws.max() <= 505
 
 

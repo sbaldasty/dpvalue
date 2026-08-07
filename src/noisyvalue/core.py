@@ -9,6 +9,7 @@ from sympy import sympify
 from .graph import NormalNode
 from .graph import BinomialNode
 from .graph import DiscreteGaussianNode
+from .graph import DiscreteLaplaceNode
 from .graph import DerivedNode
 from .graph import LatentNode
 from .graph import Node
@@ -341,13 +342,27 @@ class NoisyInt(NoisyNumber):
         return cls(obs, node)
 
     @classmethod
-    def discrete_gaussian(cls, scale, obs=None, rng=None):
+    def discrete_gaussian(cls, scale, loc=sp.Integer(0), low=-sp.oo, high=sp.oo, obs=None, rng=None):
         scale = NoisyFloat.lift(scale)
         deps = [v._root for v in (scale,) if v.expr.free_symbols]
-        node = DiscreteGaussianNode.create(deps=deps, loc=sp.Integer(0), scale=scale.expr)
+        node = DiscreteGaussianNode.create(
+            deps=deps, loc=loc, scale=scale.expr, low=low, high=high)
         if obs is None:
             rng = util.generator(rng)
-            obs = int(DiscreteGaussianNode._draw(rng, 0, float(scale)))
+            obs = int(DiscreteGaussianNode._draw(
+                rng, float(loc), float(scale), low=float(low), high=float(high)))
+        return cls(obs, node)
+
+    @classmethod
+    def discrete_laplace(cls, scale, loc=sp.Integer(0), low=-sp.oo, high=sp.oo, obs=None, rng=None):
+        scale = NoisyFloat.lift(scale)
+        deps = [v._root for v in (scale,) if v.expr.free_symbols]
+        node = DiscreteLaplaceNode.create(
+            deps=deps, loc=loc, scale=scale.expr, low=low, high=high)
+        if obs is None:
+            rng = util.generator(rng)
+            obs = int(DiscreteLaplaceNode._draw(
+                rng, float(loc), float(scale), low=float(low), high=float(high)))
         return cls(obs, node)
 
 

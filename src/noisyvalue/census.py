@@ -83,7 +83,6 @@ import sympy as sp
 from .core import NoisyInt
 from .graph import DerivedNode
 from .graph import DiscreteGaussianNode
-from .graph import TruncatedDiscreteGaussianNode
 from .pandas_ext import NoisyFloatArray
 from .pandas_ext import NoisyIntArray
 
@@ -1111,14 +1110,11 @@ def _noisy_count(obs, sd, lb=None, ub=None):
     obs = int(obs)
     if lb is not None and ub is not None and lb == ub:
         return _exact_count(lb)
-    if lb is None and ub is None:
-        node = DiscreteGaussianNode.create(loc=sp.Integer(0), scale=sp.Float(sd))
-    else:
-        # theta = obs - eps lies in [lb, ub] iff eps lies in [obs-ub, obs-lb].
-        low = -sp.oo if ub is None else sp.Integer(obs - int(ub))
-        high = sp.oo if lb is None else sp.Integer(obs - int(lb))
-        node = TruncatedDiscreteGaussianNode.create(
-            loc=sp.Integer(0), scale=sp.Float(sd), low=low, high=high)
+    # theta = obs - eps lies in [lb, ub] iff eps lies in [obs-ub, obs-lb].
+    low = -sp.oo if ub is None else sp.Integer(obs - int(ub))
+    high = sp.oo if lb is None else sp.Integer(obs - int(lb))
+    node = DiscreteGaussianNode.create(
+        loc=sp.Integer(0), scale=sp.Float(sd), low=low, high=high)
     root = DerivedNode(sp.Integer(obs) - node.expr, deps=(node,))
     return NoisyInt(obs, root)
 
@@ -1137,12 +1133,9 @@ def _conditioned_pair(obs_a, obs_b, variance, total, nonnegative):
     obs_a, obs_b, total = int(obs_a), int(obs_b), int(total)
     scale = sp.sqrt(sp.Float(float(variance)) / 2)
     delta = sp.Rational(obs_a + obs_b - total, 2)
-    if nonnegative:
-        node = TruncatedDiscreteGaussianNode.create(
-            loc=delta, scale=scale,
-            low=sp.Integer(obs_a - total), high=sp.Integer(obs_a))
-    else:
-        node = DiscreteGaussianNode.create(loc=delta, scale=scale)
+    low = sp.Integer(obs_a - total) if nonnegative else -sp.oo
+    high = sp.Integer(obs_a) if nonnegative else sp.oo
+    node = DiscreteGaussianNode.create(loc=delta, scale=scale, low=low, high=high)
     a_root = DerivedNode(sp.Integer(obs_a) - node.expr, deps=(node,))
     a = NoisyInt(obs_a, a_root)
     b_root = DerivedNode(sp.Integer(total) - a_root.expr, deps=(a_root,))

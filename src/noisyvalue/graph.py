@@ -4,7 +4,7 @@ from . import util
 from itertools import count
 from sympy import Symbol
 from sympy import sympify
-from sympy.stats import Normal
+from sympy.stats import Laplace, Normal
 from sympy.stats.frv_types import BinomialDistribution, rv
 
 
@@ -94,9 +94,11 @@ class NoiseNode(Node):
 
     def __init_subclass__(cls):
         super().__init_subclass__()
-        params = [x for x in cls.__dict__.values() if isinstance(x, Parameter)]
-        params.sort(key=lambda p: p.index)
-        cls._parameters = tuple(params)
+        # Each concrete subclass declares its own full set of Parameters
+        # directly in its own body -- deliberately not inherited from a base
+        # or mixin, which would force coordinating indices across classes.
+        params = [v for v in cls.__dict__.values() if isinstance(v, Parameter)]
+        cls._parameters = tuple(sorted(params, key=lambda p: p.index))
 
     def param_symbols(self):
         return {s for p in self.params for s in p.free_symbols}
@@ -173,71 +175,76 @@ class BinomialNode(NoiseNode):
         return np.where(valid, result, np.nan)
 
 
-class DiscreteGaussianNode(NoiseNode):
-    loc = Parameter(0)
-    scale = Parameter(1)
+def _discretize_grid(log_density, center, width, low, high):
+    """Integer support and normalized pmf for `log_density`, built on a grid
+    of half-width `width` around `center` and truncated to `[low, high]`.
 
-    def sympy_rv(self):
-        # Continuous Normal as quantile-space approximation for visualization.
-        return Normal(Name.fresh(), self.loc, self.scale)
+    The grid center is nudged inside `[low, high]` first (when finite) so
+    that mass near the closer boundary is captured even when `center` itself
+    lies outside the truncation window.
+    """
+    k_center = int(np.round(center))
+    if np.isfinite(low):
+        k_center = max(k_center, int(np.ceil(low)))
+    if np.isfinite(high):
+        k_center = min(k_center, int(np.floor(high)))
+    lo, hi = k_center - width, k_center + width
+    if np.isfinite(low):
+        lo = max(lo, int(np.ceil(low)))
+    if np.isfinite(high):
+        hi = min(hi, int(np.floor(high)))
+    k_vals = np.arange(lo, hi + 1)
+    log_pmf = log_density(k_vals)
+    log_pmf = log_pmf - log_pmf.max()
+    pmf = np.exp(log_pmf)
+    return k_vals, pmf / pmf.sum()
+
+
+class _LatticeNode(NoiseNode):
+    """Shared sampling machinery for noise discretized onto the integer
+    lattice, truncated to `[low, high]`. Pass `-oo`/`oo` for an unbounded
+    side; callers needing that as a convenience default (rather than an
+    explicit choice) should supply it at the `core.py` API layer.
+
+    Subclasses declare their own `loc`/`scale`/`low`/`high` Parameters (so
+    each class's index numbering is self-contained) and supply the
+    distribution shape via `_grid_width` (half-width of the untruncated
+    grid, tuned to that distribution's tail) and `_log_density`.
+    """
+
+    @classmethod
+    def _grid_width(cls, scale):
+        raise NotImplementedError
+
+    @classmethod
+    def _log_density(cls, k, loc, scale):
+        raise NotImplementedError
+
+    @staticmethod
+    def _resolve_bound(value, resolved):
+        # Bounds are almost always already-concrete numbers (±oo included),
+        # so skip the sympy substitution when there is nothing to resolve.
+        if value.free_symbols:
+            value = value.subs(resolved)
+        return float(value)
+
+    def _bounds(self, resolved):
+        return self._resolve_bound(self.low, resolved), self._resolve_bound(self.high, resolved)
 
     def sample(self, rng, size=None, resolved=()):
         loc = float(self.loc.subs(resolved))
         scale = float(self.scale.subs(resolved))
-        if not np.isfinite(loc) or not np.isfinite(scale) or scale <= 0:
-            return np.nan if size is None else np.full(size, np.nan, dtype=float)
-        return self._draw(rng, loc, scale, size)
-
-    @classmethod
-    def sample_arrays(cls, rng, loc, scale):
-        loc = np.asarray(loc, dtype=float)
-        scale = np.asarray(scale, dtype=float)
-        n = loc.shape[0]
-        if np.all(loc == loc[0]) and np.all(scale == scale[0]):
-            l, s = float(loc[0]), float(scale[0])
-            if not np.isfinite(l) or not np.isfinite(s) or s <= 0:
-                return np.full(n, np.nan, dtype=float)
-            return cls._draw(rng, l, s, size=n).astype(float)
-        result = np.empty(n, dtype=float)
-        for i in range(n):
-            l, s = float(loc[i]), float(scale[i])
-            if not np.isfinite(l) or not np.isfinite(s) or s <= 0:
-                result[i] = np.nan
-            else:
-                result[i] = float(cls._draw(rng, l, s))
-        return result
-
-    @classmethod
-    def _draw(cls, rng, loc, scale, size=None):
-        K = int(np.ceil(max(50.0, 6.0 * abs(scale))))
-        k_center = int(np.round(loc))
-        k_vals = np.arange(k_center - K, k_center + K + 1)
-        log_pmf = -0.5 * ((k_vals - loc) ** 2) / (scale ** 2)
-        log_pmf -= log_pmf.max()
-        pmf = np.exp(log_pmf)
-        pmf /= pmf.sum()
-        return rng.choice(k_vals, size=size, p=pmf)
-
-
-class TruncatedDiscreteGaussianNode(NoiseNode):
-    loc = Parameter(0)
-    scale = Parameter(1)
-    low = Parameter(2)
-    high = Parameter(3)
-
-    def sympy_rv(self):
-        # Continuous Normal as quantile-space approximation for visualization.
-        # Truncation is not reflected here.
-        return Normal(Name.fresh(), self.loc, self.scale)
-
-    def sample(self, rng, size=None, resolved=()):
-        loc = float(self.loc.subs(resolved))
-        scale = float(self.scale.subs(resolved))
-        low = float(self.low.subs(resolved))
-        high = float(self.high.subs(resolved))
+        low, high = self._bounds(resolved)
         if not np.isfinite(loc) or not np.isfinite(scale) or scale <= 0 or low > high:
             return np.nan if size is None else np.full(size, np.nan, dtype=float)
         return self._draw(rng, loc, scale, low, high, size)
+
+    @classmethod
+    def _draw(cls, rng, loc, scale, low, high, size=None):
+        k_vals, pmf = _discretize_grid(
+            lambda k: cls._log_density(k, loc, scale),
+            loc, cls._grid_width(scale), low, high)
+        return rng.choice(k_vals, size=size, p=pmf)
 
     @classmethod
     def sample_arrays(cls, rng, loc, scale, low, high):
@@ -246,6 +253,12 @@ class TruncatedDiscreteGaussianNode(NoiseNode):
         low = np.asarray(low, dtype=float)
         high = np.asarray(high, dtype=float)
         n = loc.shape[0]
+        if (np.all(loc == loc[0]) and np.all(scale == scale[0])
+                and np.all(low == low[0]) and np.all(high == high[0])):
+            l, s, lo, hi = float(loc[0]), float(scale[0]), float(low[0]), float(high[0])
+            if not np.isfinite(l) or not np.isfinite(s) or s <= 0 or lo > hi:
+                return np.full(n, np.nan, dtype=float)
+            return cls._draw(rng, l, s, lo, hi, size=n).astype(float)
         result = np.empty(n, dtype=float)
         for i in range(n):
             l, s = float(loc[i]), float(scale[i])
@@ -256,29 +269,47 @@ class TruncatedDiscreteGaussianNode(NoiseNode):
                 result[i] = float(cls._draw(rng, l, s, lo, hi))
         return result
 
+
+class DiscreteGaussianNode(_LatticeNode):
+    loc = Parameter(0)
+    scale = Parameter(1)
+    low = Parameter(2)
+    high = Parameter(3)
+
     @classmethod
-    def _draw(cls, rng, loc, scale, low, high, size=None):
-        K = int(np.ceil(max(50.0, 6.0 * abs(scale))))
-        k_center = int(np.round(loc))
-        # Keep the grid centered near loc but inside the truncation window,
-        # so mass near the closer boundary is captured even when loc is far
-        # outside [low, high].
-        if np.isfinite(low):
-            k_center = max(k_center, int(np.ceil(low)))
-        if np.isfinite(high):
-            k_center = min(k_center, int(np.floor(high)))
-        lo = k_center - K
-        hi = k_center + K
-        if np.isfinite(low):
-            lo = max(lo, int(np.ceil(low)))
-        if np.isfinite(high):
-            hi = min(hi, int(np.floor(high)))
-        k_vals = np.arange(lo, hi + 1)
-        log_pmf = -0.5 * ((k_vals - loc) ** 2) / (scale ** 2)
-        log_pmf -= log_pmf.max()
-        pmf = np.exp(log_pmf)
-        pmf /= pmf.sum()
-        return rng.choice(k_vals, size=size, p=pmf)
+    def _grid_width(cls, scale):
+        return int(np.ceil(max(50.0, 6.0 * abs(scale))))
+
+    @classmethod
+    def _log_density(cls, k, loc, scale):
+        return -0.5 * ((k - loc) ** 2) / (scale ** 2)
+
+    def sympy_rv(self):
+        # Continuous Normal as quantile-space approximation for visualization.
+        # Truncation (if any) is not reflected here.
+        return Normal(Name.fresh(), self.loc, self.scale)
+
+
+class DiscreteLaplaceNode(_LatticeNode):
+    loc = Parameter(0)
+    scale = Parameter(1)
+    low = Parameter(2)
+    high = Parameter(3)
+
+    @classmethod
+    def _grid_width(cls, scale):
+        # Exponential tails are heavier than Gaussian's, so this needs a
+        # bigger multiple of scale for comparable truncation error.
+        return int(np.ceil(max(50.0, 30.0 * abs(scale))))
+
+    @classmethod
+    def _log_density(cls, k, loc, scale):
+        return -np.abs(k - loc) / scale
+
+    def sympy_rv(self):
+        # Continuous Laplace as quantile-space approximation for visualization.
+        # Truncation (if any) is not reflected here.
+        return Laplace(Name.fresh(), self.loc, self.scale)
 
 
 def topological_sort_law_nodes(law_nodes):

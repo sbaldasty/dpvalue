@@ -38,7 +38,7 @@ from noisyvalue.census import (
     pl94_queries,
 )
 from noisyvalue.core import NoisyInt, sample_noisy_values
-from noisyvalue.graph import TruncatedDiscreteGaussianNode
+from noisyvalue.graph import DiscreteGaussianNode
 
 
 # ── codebook ─────────────────────────────────────────────────────────────────
@@ -125,11 +125,11 @@ def test_dhc_queries_cell_counts_and_sex_coverage():
     assert "popSehsdTargetsRelship" not in with_sex
 
 
-# ── truncated discrete gaussian ──────────────────────────────────────────────
+# ── discrete gaussian truncation ─────────────────────────────────────────────
 
 def test_truncated_discrete_gaussian_respects_bounds():
     rng = np.random.default_rng(7)
-    node = TruncatedDiscreteGaussianNode.create(loc=0, scale=5, low=-3, high=2)
+    node = DiscreteGaussianNode.create(loc=0, scale=5, low=-3, high=2)
     draws = node.sample(rng, size=4000)
     assert draws.min() >= -3
     assert draws.max() <= 2
@@ -137,14 +137,14 @@ def test_truncated_discrete_gaussian_respects_bounds():
 
 def test_truncated_discrete_gaussian_point_mass():
     rng = np.random.default_rng(7)
-    node = TruncatedDiscreteGaussianNode.create(loc=0, scale=5, low=4, high=4)
+    node = DiscreteGaussianNode.create(loc=0, scale=5, low=4, high=4)
     draws = node.sample(rng, size=100)
     assert np.all(draws == 4)
 
 
 def test_truncated_discrete_gaussian_window_far_from_loc():
     rng = np.random.default_rng(7)
-    node = TruncatedDiscreteGaussianNode.create(loc=0, scale=2, low=1000, high=1010)
+    node = DiscreteGaussianNode.create(loc=0, scale=2, low=1000, high=1010)
     draws = node.sample(rng, size=200)
     assert draws.min() >= 1000
     assert draws.max() <= 1010
@@ -153,9 +153,7 @@ def test_truncated_discrete_gaussian_window_far_from_loc():
 
 
 def test_observe_posterior_centers_on_observation():
-    from noisyvalue.graph import DiscreteGaussianNode
-
-    node = DiscreteGaussianNode.create(loc=0, scale=3)
+    node = DiscreteGaussianNode.create(loc=0, scale=3, low=-sp.oo, high=sp.oo)
     value = NoisyInt.observe(100, node)
     batch = value.sample(4000, rng=11)
     assert int(value) == 100

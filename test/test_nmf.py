@@ -15,8 +15,8 @@ import pytest
 from noisyvalue import nmf
 from noisyvalue.core import sample_noisy_values
 from noisyvalue.dataset import GeographyUnavailable
-from noisyvalue.graph import (DiscreteGaussianNode, NoiseNode,
-                              TruncatedDiscreteGaussianNode)
+from noisyvalue.graph import DiscreteGaussianNode, NoiseNode
+from sympy import oo
 
 
 def _only_noise(value):
@@ -193,14 +193,16 @@ def test_hhgq_lower_bounds_do_not_reach_a_sliced_category(pl94_root):
     node = _only_noise(whole[whole["hhgq"] == "correctional"]["value"].array[0])
     # the cell *is* the category total, so its lower bound of 5 binds; in
     # eps space that is a ceiling of obs - 5 = -2
-    assert isinstance(node, TruncatedDiscreteGaussianNode)
+    assert isinstance(node, DiscreteGaussianNode)
+    assert node.high != oo
     assert float(node.high) == -2
 
     # the detailed query slices the category by age, ethnicity and race, and a
     # slice is not bounded below by what the whole category must hold
     detailed = view.query("detailed")
-    sliced = detailed[detailed["hhgq"] == "correctional"]["value"].array[0]
-    assert isinstance(_only_noise(sliced), DiscreteGaussianNode)
+    sliced_node = _only_noise(detailed[detailed["hhgq"] == "correctional"]["value"].array[0])
+    assert isinstance(sliced_node, DiscreteGaussianNode)
+    assert sliced_node.low == -oo and sliced_node.high == oo
 
 
 def test_nonnegativity_can_be_declined(pl94_root):
