@@ -175,30 +175,6 @@ class BinomialNode(NoiseNode):
         return np.where(valid, result, np.nan)
 
 
-def _discretize_grid(log_density, center, width, low, high):
-    """Integer support and normalized pmf for `log_density`, built on a grid
-    of half-width `width` around `center` and truncated to `[low, high]`.
-
-    The grid center is nudged inside `[low, high]` first (when finite) so
-    that mass near the closer boundary is captured even when `center` itself
-    lies outside the truncation window.
-    """
-    k_center = int(np.round(center))
-    if np.isfinite(low):
-        k_center = max(k_center, int(np.ceil(low)))
-    if np.isfinite(high):
-        k_center = min(k_center, int(np.floor(high)))
-    lo, hi = k_center - width, k_center + width
-    if np.isfinite(low):
-        lo = max(lo, int(np.ceil(low)))
-    if np.isfinite(high):
-        hi = min(hi, int(np.floor(high)))
-    k_vals = np.arange(lo, hi + 1)
-    log_pmf = log_density(k_vals)
-    log_pmf = log_pmf - log_pmf.max()
-    pmf = np.exp(log_pmf)
-    return k_vals, pmf / pmf.sum()
-
 
 class LatticeNode(NoiseNode):
     """Shared sampling machinery for noise discretized onto the integer
@@ -239,9 +215,23 @@ class LatticeNode(NoiseNode):
 
     @classmethod
     def _draw(cls, rng, loc, scale, low, high, size=None):
-        k_vals, pmf = _discretize_grid(
-            lambda k: cls.log_density(k, loc, scale),
-            loc, cls.grid_width(scale), low, high)
+        width = cls.grid_width(scale)
+        # Nudge center inside [low, high] to capture mass near the closer boundary
+        k_center = int(np.round(loc))
+        if np.isfinite(low):
+            k_center = max(k_center, int(np.ceil(low)))
+        if np.isfinite(high):
+            k_center = min(k_center, int(np.floor(high)))
+        lo, hi = k_center - width, k_center + width
+        if np.isfinite(low):
+            lo = max(lo, int(np.ceil(low)))
+        if np.isfinite(high):
+            hi = min(hi, int(np.floor(high)))
+        k_vals = np.arange(lo, hi + 1)
+        log_pmf = cls.log_density(k_vals, loc, scale)
+        log_pmf = log_pmf - log_pmf.max()
+        pmf = np.exp(log_pmf)
+        pmf = pmf / pmf.sum()
         return rng.choice(k_vals, size=size, p=pmf)
 
     @classmethod
