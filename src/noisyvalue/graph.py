@@ -200,7 +200,7 @@ def _discretize_grid(log_density, center, width, low, high):
     return k_vals, pmf / pmf.sum()
 
 
-class _LatticeNode(NoiseNode):
+class LatticeNode(NoiseNode):
     """Shared sampling machinery for noise discretized onto the integer
     lattice, truncated to `[low, high]`. Pass `-oo`/`oo` for an unbounded
     side; callers needing that as a convenience default (rather than an
@@ -208,33 +208,31 @@ class _LatticeNode(NoiseNode):
 
     Subclasses declare their own `loc`/`scale`/`low`/`high` Parameters (so
     each class's index numbering is self-contained) and supply the
-    distribution shape via `_grid_width` (half-width of the untruncated
-    grid, tuned to that distribution's tail) and `_log_density`.
+    distribution shape via `grid_width` (half-width of the untruncated
+    grid, tuned to that distribution's tail) and `log_density`.
     """
 
     @classmethod
-    def _grid_width(cls, scale):
+    def grid_width(cls, scale):
         raise NotImplementedError
 
     @classmethod
-    def _log_density(cls, k, loc, scale):
+    def log_density(cls, k, loc, scale):
         raise NotImplementedError
 
     @staticmethod
-    def _resolve_bound(value, resolved):
+    def resolve_bound(value, resolved):
         # Bounds are almost always already-concrete numbers (±oo included),
         # so skip the sympy substitution when there is nothing to resolve.
         if value.free_symbols:
             value = value.subs(resolved)
         return float(value)
 
-    def _bounds(self, resolved):
-        return self._resolve_bound(self.low, resolved), self._resolve_bound(self.high, resolved)
-
     def sample(self, rng, size=None, resolved=()):
         loc = float(self.loc.subs(resolved))
         scale = float(self.scale.subs(resolved))
-        low, high = self._bounds(resolved)
+        low = self.resolve_bound(self.low, resolved)
+        high = self.resolve_bound(self.high, resolved)
         if not np.isfinite(loc) or not np.isfinite(scale) or scale <= 0 or low > high:
             return np.nan if size is None else np.full(size, np.nan, dtype=float)
         return self._draw(rng, loc, scale, low, high, size)
@@ -242,8 +240,8 @@ class _LatticeNode(NoiseNode):
     @classmethod
     def _draw(cls, rng, loc, scale, low, high, size=None):
         k_vals, pmf = _discretize_grid(
-            lambda k: cls._log_density(k, loc, scale),
-            loc, cls._grid_width(scale), low, high)
+            lambda k: cls.log_density(k, loc, scale),
+            loc, cls.grid_width(scale), low, high)
         return rng.choice(k_vals, size=size, p=pmf)
 
     @classmethod
@@ -270,18 +268,18 @@ class _LatticeNode(NoiseNode):
         return result
 
 
-class DiscreteGaussianNode(_LatticeNode):
+class DiscreteGaussianNode(LatticeNode):
     loc = Parameter(0)
     scale = Parameter(1)
     low = Parameter(2)
     high = Parameter(3)
 
     @classmethod
-    def _grid_width(cls, scale):
+    def grid_width(cls, scale):
         return int(np.ceil(max(50.0, 6.0 * abs(scale))))
 
     @classmethod
-    def _log_density(cls, k, loc, scale):
+    def log_density(cls, k, loc, scale):
         return -0.5 * ((k - loc) ** 2) / (scale ** 2)
 
     def sympy_rv(self):
@@ -290,20 +288,20 @@ class DiscreteGaussianNode(_LatticeNode):
         return Normal(Name.fresh(), self.loc, self.scale)
 
 
-class DiscreteLaplaceNode(_LatticeNode):
+class DiscreteLaplaceNode(LatticeNode):
     loc = Parameter(0)
     scale = Parameter(1)
     low = Parameter(2)
     high = Parameter(3)
 
     @classmethod
-    def _grid_width(cls, scale):
+    def grid_width(cls, scale):
         # Exponential tails are heavier than Gaussian's, so this needs a
         # bigger multiple of scale for comparable truncation error.
         return int(np.ceil(max(50.0, 30.0 * abs(scale))))
 
     @classmethod
-    def _log_density(cls, k, loc, scale):
+    def log_density(cls, k, loc, scale):
         return -np.abs(k - loc) / scale
 
     def sympy_rv(self):
