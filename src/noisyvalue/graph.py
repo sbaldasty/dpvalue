@@ -94,10 +94,23 @@ class NoiseNode(Node):
 
     def __init_subclass__(cls):
         super().__init_subclass__()
-        # Each concrete subclass declares its own full set of Parameters
-        # directly in its own body -- deliberately not inherited from a base
-        # or mixin, which would force coordinating indices across classes.
-        params = [v for v in cls.__dict__.values() if isinstance(v, Parameter)]
+        # A concrete subclass either declares its own full set of Parameters
+        # directly in its own body, or inherits them from a shared base (e.g.
+        # LocationScaleLatticeNode) -- search the MRO so both styles work.
+        # A name defined at more than one level is ambiguous, not an
+        # override, so that's a hard failure.
+        seen_names = set()
+        params = []
+        for klass in cls.__mro__:
+            for v in klass.__dict__.values():
+                if isinstance(v, Parameter):
+                    if v.name in seen_names:
+                        raise TypeError(
+                            f"{cls.__name__}: Parameter '{v.name}' is defined "
+                            "in more than one class in its MRO"
+                        )
+                    seen_names.add(v.name)
+                    params.append(v)
         cls._parameters = tuple(sorted(params, key=lambda p: p.index))
 
     def param_symbols(self):
@@ -176,17 +189,17 @@ class BinomialNode(NoiseNode):
 
 
 
-class LatticeNode(NoiseNode):
+class LocationScaleLatticeNode(NoiseNode):
     """Shared sampling machinery for noise discretized onto the integer
     lattice, truncated to `[low, high]`. Pass `-oo`/`oo` for an unbounded
     side; callers needing that as a convenience default (rather than an
     explicit choice) should supply it at the `core.py` API layer.
-
-    Subclasses declare their own `loc`/`scale`/`low`/`high` Parameters (so
-    each class's index numbering is self-contained) and supply the
-    distribution shape via `grid_width` (half-width of the untruncated
-    grid, tuned to that distribution's tail) and `log_density`.
     """
+
+    loc = Parameter(0)
+    scale = Parameter(1)
+    low = Parameter(2)
+    high = Parameter(3)
 
     @classmethod
     def grid_width(cls, scale):
@@ -258,12 +271,7 @@ class LatticeNode(NoiseNode):
         return result
 
 
-class DiscreteGaussianNode(LatticeNode):
-    loc = Parameter(0)
-    scale = Parameter(1)
-    low = Parameter(2)
-    high = Parameter(3)
-
+class DiscreteGaussianNode(LocationScaleLatticeNode):
     @classmethod
     def grid_width(cls, scale):
         return int(np.ceil(max(50.0, 6.0 * abs(scale))))
@@ -278,12 +286,7 @@ class DiscreteGaussianNode(LatticeNode):
         return Normal(Name.fresh(), self.loc, self.scale)
 
 
-class DiscreteLaplaceNode(LatticeNode):
-    loc = Parameter(0)
-    scale = Parameter(1)
-    low = Parameter(2)
-    high = Parameter(3)
-
+class DiscreteLaplaceNode(LocationScaleLatticeNode):
     @classmethod
     def grid_width(cls, scale):
         # Exponential tails are heavier than Gaussian's, so this needs a
