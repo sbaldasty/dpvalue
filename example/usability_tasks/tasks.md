@@ -10,6 +10,8 @@ residents.
 
 # Task 2
 
+Note: this task is similar to task 1, but for a different county.
+
 The script `task2.R` prints the noisy released male and female counts for
 Orange County, Vermont, from the same release.
 
@@ -18,11 +20,12 @@ residents.
 
 # Task 3
 
-Using the counts printed by `task1.R`, estimate the posterior probability
-that Chittenden County's true male population exceeds its true female
-population. If that probability is at least 0.95 or at most 0.05, state
-which group has the larger population; otherwise, state that the data are
-inconclusive.
+Note: this task is different from prior tasks.
+
+The script `task3.R` prints the posterior probability that Chittenden
+County's true male population exceeds its true female population. If that
+probability is at least 0.95 or at most 0.05, state which group has the
+larger population; otherwise, state that the data are inconclusive.
 
 (This replaces the frequentist hypothesis test of the original exercise:
 `noisyvalue` tracks a full posterior over the true counts, including any
@@ -34,17 +37,20 @@ not noisy *columns*, for `male > female` to give you that posterior
 probability. Comparing two noisy columns (or column slices) with `>`
 instead gives an ordinary logical mask over their *observed* values --
 correct for row-filtering a table, but not what task 3/4 are asking for.
-`task1.R`/`task2.R` extract with `[[` for exactly this reason.
+`task3.R`/`task4.R` extract with `[[` for exactly this reason.
 
 # Task 4
 
-Using the counts printed by `task2.R`, estimate the posterior probability
-that Orange County's true male population exceeds its true female
-population. If that probability is at least 0.95 or at most 0.05, state
-which group has the larger population; otherwise, state that the data are
-inconclusive.
+Note: this task is similar to Task 3, but for a different county.
+
+The script `task4.R` prints the posterior probability that Orange County's
+true male population exceeds its true female population. If that
+probability is at least 0.95 or at most 0.05, state which group has the
+larger population; otherwise, state that the data are inconclusive.
 
 # Task 5
+
+Note: this task is different from the prior tasks.
 
 The script `task5.R` prints the noisy total number of male and female
 residents across Chittenden and Orange counties, Vermont.

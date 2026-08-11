@@ -1,8 +1,10 @@
 # Solutions
 
 Each answer below was produced by loading `task1.R`/`task2.R`/`task5.R`'s
-data and then calling `noisy_credible_interval()` / `noisy_prob()` from the
-`noisyvalue` R package, e.g.:
+data and then calling `noisy_credible_interval()` (as `task1.R`/`task2.R`/
+`task5.R` don't print credible intervals themselves) or `noisy_prob()` (as
+printed directly by `task3.R`/`task4.R`) from the `noisyvalue` R package,
+e.g.:
 
 ```r
 pkgload::load_all("r/noisyvalue", quiet = TRUE)
