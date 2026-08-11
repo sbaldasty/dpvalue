@@ -82,10 +82,20 @@ def test_gaussian_variances_reproduce_the_readme_confidence_intervals():
 
 
 def test_us_rows_in_the_gap_carry_the_historical_mechanism():
-    assert wm.mechanism(d("2023-05-01"), "US").threshold == 450
-    assert wm.mechanism(d("2023-05-01"), "FR").threshold == 90
+    assert wm.mechanism(d("2023-05-02"), "US").threshold == 450
+    assert wm.mechanism(d("2023-05-02"), "FR").threshold == 90
     assert wm.mechanism(d("2023-09-19"), "US").threshold == 450
     assert wm.mechanism(d("2023-09-20"), "US").threshold == 90
+
+
+def test_the_us_gap_was_intermittent():
+    # on 48 of the gap's 226 days the pipeline succeeded, and US rows carry
+    # the ordinary lower-risk Gaussian mechanism
+    assert wm.mechanism(d("2023-05-01"), "US").threshold == 90
+    assert wm.mechanism(d("2023-09-01"), "US").threshold == 90
+    assert len(wm.US_GAUSSIAN_DAYS) == 48
+    for day in wm.US_GAUSSIAN_DAYS:
+        assert wm.US_GAP[0] <= day <= wm.US_GAP[1]
 
 
 def test_patch_days_carry_the_historical_mechanism_for_every_country():
@@ -160,12 +170,16 @@ def root(tmp_path):
          "Q1354", 780),
         ("Russia", "RU", "ru.wikipedia", 444, 'Page_with_"quotes"', "", 1420),
     ])
-    write("country_project_page", "2023-05-01", [
+    write("country_project_page", "2023-05-02", [
         ("United States", "US", "en.wikipedia", 555, "Earth", "Q2", 4021),
         ("France", "FR", "fr.wikipedia", 666, "Terre", "Q2", 512),
     ])
     write("country_project_page_historical", "2018-06-01", [
         ("Germany", "DE", "de.wikipedia", 777, "Erde", "Q2", 913),
+    ])
+    # the pre-2017 layout: six columns, page_id always empty, no item_id
+    write("country_project_page_historical_pre_2017", "2016-01-01", [
+        ("Canada", "CA", "en.wikipedia", "", "2016", 4360),
     ])
     return str(tmp_path)
 
@@ -195,7 +209,7 @@ def test_variance_follows_the_tier_and_the_era(root):
 
 
 def test_us_gap_rows_carry_the_geometric_mechanism(root):
-    frame = wm.get_pageviews("2023-05-01", root=root)
+    frame = wm.get_pageviews("2023-05-02", root=root)
     mechs = dict(zip(frame["country_code"], frame["mechanism"]))
     assert "geometric" in mechs["US"]
     assert "Gaussian" in mechs["FR"]
@@ -210,9 +224,26 @@ def test_filters_match_names_codes_titles_projects_and_items(root):
     proj = wm.get_pageviews("2024-03-01",
                             project=["is.wikipedia", "bn.wikipedia"], root=root)
     assert len(proj) == 2
-    item = wm.get_pageviews("2023-05-01", item="Q2", root=root)
+    item = wm.get_pageviews("2023-05-02", item="Q2", root=root)
     assert len(item) == 2
     assert wm.get_pageviews("2024-03-01", country="Narnia", root=root).empty
+
+
+def test_pre_2017_files_have_no_page_ids(root):
+    frame = wm.get_pageviews("2016-01-01", root=root)
+
+    assert frame["page_id"].isna().all()
+    assert frame["item_id"].isna().all()
+    assert list(frame["page_title"]) == ["2016"]
+    assert frame["variance"].iloc[0] == pytest.approx(
+        DiscreteLaplaceFamily.variance_from_scale(300.0))
+    # a title-keyed cell is still one random variable across reads
+    again = wm.get_pageviews("2016-01-01", page="2016", root=root)
+    batch_a, batch_b = sample_noisy_values(
+        frame["value"][0], again["value"][0], n=100, rng=9)
+    assert np.array_equal(batch_a.draws, batch_b.draws)
+    # and an item filter simply selects nothing there
+    assert wm.get_pageviews("2016-01-01", item="Q1", root=root).empty
 
 
 def test_quotes_in_titles_are_read_literally(root):
@@ -307,3 +338,163 @@ def test_fetch_mirrors_into_the_release_layout(monkeypatch, tmp_path):
 def test_fetch_refuses_a_never_released_day(tmp_path):
     with pytest.raises(ValueError, match="never released"):
         wm.fetch_pageviews("2022-10-19", root=str(tmp_path))
+
+
+# ── integration against the real releases ────────────────────────────────────
+#
+# The minimum released count in a group of rows reveals the threshold that
+# suppressed its neighbours -- 90 / 450 / 550 / 1000 / 3500 -- and thereby
+# which mechanism made it, so these tests check the codebook's routing
+# against the files themselves.  They read days mirrored into the default
+# root and are skipped without them; one call prepares everything:
+#
+#   from noisyvalue import fetch_pageviews
+#   fetch_pageviews(["2016-01-01", "2018-06-01", "2023-05-01", "2023-06-01",
+#                    "2023-11-17", "2024-02-15", "2026-01-26"])
+
+def _mirrored(day):
+    release = wm.release_for(d(day))
+    path = os.path.join(wm.DEFAULT_ROOT, release.dataset, f"{day}.tsv")
+    return pytest.mark.skipif(
+        not os.path.exists(path),
+        reason=f"{day} not mirrored; run the fetch_pageviews call in the "
+               "comment above this test's section")
+
+
+def _floor(frame, code=None):
+    """Smallest released count, optionally for one country's rows."""
+    obs = frame["value"].array._obs
+    if code is not None:
+        obs = obs[(frame["country_code"] == code).to_numpy()]
+    return int(obs.min())
+
+
+_BIG = ["US", "GB", "DE", "FR", "JP"]        # never below their thresholds
+
+
+@_mirrored("2016-01-01")
+def test_live_pre_2017_floor_sits_at_its_threshold():
+    frame = wm.get_pageviews("2016-01-01", country=_BIG)
+    assert 3500 <= _floor(frame) < 3700
+
+
+@_mirrored("2018-06-01")
+def test_live_historical_floor_sits_at_its_threshold():
+    frame = wm.get_pageviews("2018-06-01", country=_BIG)
+    assert 450 <= _floor(frame) < 520
+
+
+@_mirrored("2023-06-01")
+def test_live_us_gap_backfill_days_have_the_geometric_floor():
+    frame = wm.get_pageviews("2023-06-01", country=_BIG)
+    assert 450 <= _floor(frame, "US") < 520
+    assert 90 <= _floor(frame, "FR") < 130
+    assert 90 <= _floor(frame, "DE") < 130
+
+
+@_mirrored("2023-05-01")
+def test_live_us_gap_exception_days_have_the_ordinary_floor():
+    frame = wm.get_pageviews("2023-05-01", country=_BIG)
+    assert 90 <= _floor(frame, "US") < 130
+    assert 90 <= _floor(frame, "FR") < 130
+
+
+@_mirrored("2023-11-17")
+def test_live_patch_days_are_wholly_geometric():
+    frame = wm.get_pageviews("2023-11-17", country=_BIG)
+    assert 450 <= _floor(frame) < 520
+
+
+@_mirrored("2024-02-15")
+def test_live_tier_debut_floors():
+    frame = wm.get_pageviews("2024-02-15", country=["US", "BD", "RU"])
+    assert 90 <= _floor(frame, "US") < 130
+    assert 550 <= _floor(frame, "BD") < 650
+    assert 1000 <= _floor(frame, "RU") < 1150
+
+
+@_mirrored("2026-01-26")
+def test_live_recalibration_floors():
+    frame = wm.get_pageviews("2026-01-26", country=["PK", "KW", "RU"])
+    assert 1000 <= _floor(frame, "PK") < 1150       # medium -> higher
+    assert _floor(frame, "KW") < 550                # medium -> lower
+    assert not (frame["country_code"] == "RU").any()    # higher -> not published
+
+
+@_mirrored("2018-06-01")
+def test_live_historical_country_sum_is_commensurate_with_the_public_count():
+    """Suppression and per-user clipping only remove views, so summing the
+    released countries must stay below the public API's exact figure while
+    still carrying the bulk of it.  Catches gross misreads (wrong column,
+    wrong scale), not subtle ones.
+
+    The ceiling is the *all-agents* figure: the historical pipeline
+    evidently did not filter automated traffic (Earth on 2018-06-01 shows
+    data-center-sized counts from NL and SG, and the country sum lands on
+    the all-agents total at six times the human one)."""
+    frame = wm.get_pageviews("2018-06-01", page="Earth", project="en.wikipedia")
+    assert len(frame) > 0
+    dp_sum = int(frame["value"].array._obs.sum())
+    exact = _public_count("en.wikipedia", "Earth", "20180601", "all-agents")
+    assert 0.2 * exact < dp_sum < 1.1 * exact
+
+
+@_mirrored("2023-05-01")
+def test_live_current_country_sum_is_commensurate_with_the_public_count():
+    """The current era counts each device's first ten unique views via a
+    browser cookie, so unlike the historical era it tracks human traffic;
+    its sum sits below even the API's user-only figure."""
+    frame = wm.get_pageviews("2023-05-01", page="Earth", project="en.wikipedia")
+    assert len(frame) > 0
+    dp_sum = int(frame["value"].array._obs.sum())
+    exact = _public_count("en.wikipedia", "Earth", "20230501", "user")
+    assert 0.2 * exact < dp_sum < 1.1 * exact
+
+
+def _public_count(project, title, yyyymmdd, agent):
+    import json
+    import urllib.error
+    import urllib.request
+    url = (f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
+           f"{project}/all-access/{agent}/{title}/daily/{yyyymmdd}/{yyyymmdd}")
+    request = urllib.request.Request(
+        url, headers={"User-Agent":
+                      "noisyvalue tests (https://github.com/sbaldasty/noisyvalue)"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.load(response)
+    except (urllib.error.URLError, TimeoutError) as error:
+        pytest.skip(f"pageviews API unreachable: {error}")
+    return int(payload["items"][0]["views"])
+
+
+@pytest.mark.skipif(not os.path.isdir(wm.DEFAULT_ROOT),
+                    reason="wikimedia pageview mirror not present")
+def test_live_codebook_matches_the_current_protection_list():
+    """The canary for list drift: when Wikimedia recalibrates the Country
+    and Territory Protection List, this fails, and the fix is a new dated
+    entry in `_TIER_VERSIONS` (pin its effective day by probing released
+    files around the revision, as test_wikimedia's header describes)."""
+    import csv
+    import urllib.error
+    import urllib.request
+    url = ("https://gitlab.wikimedia.org/repos/movement-insights/"
+           "canonical-data/-/raw/main/country/countries.tsv")
+    request = urllib.request.Request(
+        url, headers={"User-Agent":
+                      "noisyvalue tests (https://github.com/sbaldasty/noisyvalue)"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            text = response.read().decode("utf-8")
+    except (urllib.error.URLError, TimeoutError) as error:
+        pytest.skip(f"canonical-data repository unreachable: {error}")
+
+    listed = {"Medium risk": set(), "Higher risk": set(), "Not published": set()}
+    for row in csv.DictReader(text.splitlines(), delimiter="\t"):
+        if row["data_risk_classification"] in listed:
+            listed[row["data_risk_classification"]].add(row["iso_code"])
+
+    current = wm._TIER_VERSIONS[-1][1]
+    assert listed["Medium risk"] == set(current["medium"])
+    assert listed["Higher risk"] == set(current["higher"])
+    assert listed["Not published"] == set(current["not published"])

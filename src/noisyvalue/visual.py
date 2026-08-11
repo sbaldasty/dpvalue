@@ -35,7 +35,6 @@ def _weighted_quantile(values, weights, q):
 
 
 def _quantile_nodes_for_rv(source, quadrature_points, eps=1e-8):
-    qfun = quantile(source.sympy_rv())
     nodes, weights = np.polynomial.legendre.leggauss(quadrature_points)
 
     # Map Gauss-Legendre nodes from [-1, 1] to [0, 1].
@@ -43,6 +42,13 @@ def _quantile_nodes_for_rv(source, quadrature_points, eps=1e-8):
     u = np.clip(u, eps, 1.0 - eps)
     w = 0.5 * weights
 
+    # A node may supply its own closed-form quantile, for distributions
+    # sympy cannot invert.
+    if hasattr(source, "quantile"):
+        return (np.asarray(source.quantile(u), dtype=float),
+                np.asarray(w, dtype=float))
+
+    qfun = quantile(source.sympy_rv())
     rv_values = []
     for ui in u:
         try:

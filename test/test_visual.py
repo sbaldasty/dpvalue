@@ -79,3 +79,18 @@ def test_plot_posteriors_supports_multiple_values():
     result = plot_posterior(noisy_a, noisy_b, quadrature_points=7, grid_size=180)
 
     assert len(result["curves"]) == 2
+
+
+def test_plot_posterior_supports_discrete_laplace_cells():
+    # sympy cannot invert the Laplace CDF (its _quantile returns None), so
+    # the node supplies its own closed form; the density must come out
+    # centred on the observation
+    from noisyvalue.dataset import DiscreteLaplaceFamily
+
+    family = DiscreteLaplaceFamily()
+    cell = family.cell(1000, family.variance_from_scale(30.0))
+    result = plot_posterior(cell, quadrature_points=9, grid_size=150)
+
+    curve = result["curves"][0]
+    peak = curve["x"][np.argmax(curve["density"])]
+    assert abs(peak - 1000) < 30

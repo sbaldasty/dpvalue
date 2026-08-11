@@ -21,6 +21,11 @@ pageviews per day (the two historical eras, which predate the client-side
 counting cookie, instead assumed per-user daily bounds of 30 and 300).  The
 latent quantity is therefore a deduplicated, clipped pageview count --
 systematically below the exact global counts of the public pageview API.
+The eras also differ in *whose* views they count: the cookie implies a real
+browser, and the current era's country sums sit below the API's user-only
+figures, while the historical pipeline evidently did not filter automated
+traffic -- its sums track the API's all-agents totals, with data-center
+countries (NL, SG) sometimes carrying most of a page's count.
 
 There is one release directory per era, each a daily TSV of
 (country, country_code, project, page_id, page_title, item_id, count):
@@ -64,7 +69,9 @@ from .pandas_ext import NoisyIntArray
 BASE_URL = "https://analytics.wikimedia.org/published/datasets"
 DEFAULT_ROOT = "data/wikimedia-pageviews"
 
-# TSV column order; the files carry no header row.
+# TSV column order; the files carry no header row.  The pre-2017 release
+# predates page ids: its files drop the item_id column outright and leave
+# page_id empty, so there a page's identity is its title.
 COLUMNS = ("country", "country_code", "project", "page_id", "page_title",
            "item_id", "count")
 
@@ -118,14 +125,26 @@ _GAUSSIAN = {
 
 # ── releases ─────────────────────────────────────────────────────────────────
 
+_SCHEMA = {
+    "country": pl.Utf8, "country_code": pl.Utf8, "project": pl.Utf8,
+    "page_id": pl.Int64, "page_title": pl.Utf8, "item_id": pl.Utf8,
+    "count": pl.Int64,
+}
+_PRE_2017_SCHEMA = {
+    "country": pl.Utf8, "country_code": pl.Utf8, "project": pl.Utf8,
+    "page_id": pl.Int64, "page_title": pl.Utf8, "count": pl.Int64,
+}
+
+
 class Release:
     """One release directory: a name, a URL path, and the days it serves."""
 
-    def __init__(self, name, dataset, start, end):
+    def __init__(self, name, dataset, start, end, schema=_SCHEMA):
         self.name = name
         self.dataset = dataset
         self.start = start
         self.end = end                      # None while still being extended
+        self.schema = schema
 
     def __repr__(self):
         return f"<Release {self.name!r}: {self.start} - {self.end or 'present'}>"
@@ -136,7 +155,8 @@ class Release:
 
 RELEASES = (
     Release("pre-2017", "country_project_page_historical_pre_2017",
-            dt.date(2015, 7, 1), dt.date(2017, 2, 8)),
+            dt.date(2015, 7, 1), dt.date(2017, 2, 8),
+            schema=_PRE_2017_SCHEMA),
     Release("historical", "country_project_page_historical",
             dt.date(2017, 2, 9), dt.date(2023, 2, 5)),
     Release("current", "country_project_page",
@@ -152,15 +172,35 @@ MISSING_DAYS = frozenset({
 
 # Pipeline failures in the current era, repaired afterwards with the
 # *historical* mechanism (WMF's retention rules had already destroyed the
-# data an exact re-run would have needed): seven whole days, plus United
-# States rows for the first months of the era, which a database naming error
-# had silently dropped.
+# data an exact re-run would have needed): seven whole days, plus most --
+# not all -- United States rows for the first months of the era, which a
+# database naming error kept dropping.
 PATCH_DAYS = frozenset({
     dt.date(2023, 6, 19), dt.date(2023, 10, 25),
     dt.date(2023, 11, 13), dt.date(2023, 11, 17), dt.date(2023, 11, 19),
     dt.date(2023, 11, 23), dt.date(2023, 11, 27),
 })
-US_GAP_END = dt.date(2023, 9, 19)           # inclusive; Gaussian from the 20th
+
+# The US gap is documented as 2023-02-06 through 2023-09-19, but it was not
+# solid: on 48 of its 226 days the pipeline succeeded, and those files carry
+# ordinary lower-risk Gaussian US rows.  There is no published list, so this
+# one was derived by scanning the US minimum released count of every day in
+# the range -- 450 marks the geometric backfill, ~90 the ordinary mechanism,
+# and the two never blur -- and sampled days are re-checked in
+# test_wikimedia.py.
+US_GAP = (dt.date(2023, 2, 6), dt.date(2023, 9, 19))
+US_GAUSSIAN_DAYS = frozenset(map(dt.date.fromisoformat, (
+    "2023-02-19", "2023-02-21", "2023-02-28", "2023-03-05", "2023-03-07",
+    "2023-03-09", "2023-03-12", "2023-03-13", "2023-03-14", "2023-03-19",
+    "2023-03-26", "2023-03-28", "2023-03-31", "2023-04-01", "2023-04-02",
+    "2023-04-03", "2023-04-25", "2023-04-26", "2023-04-28", "2023-05-01",
+    "2023-05-08", "2023-05-12", "2023-05-19", "2023-05-23", "2023-05-24",
+    "2023-06-11", "2023-06-14", "2023-06-16", "2023-06-28", "2023-07-05",
+    "2023-07-07", "2023-07-08", "2023-07-10", "2023-07-11", "2023-07-12",
+    "2023-07-25", "2023-07-26", "2023-07-31", "2023-08-05", "2023-08-06",
+    "2023-08-11", "2023-08-16", "2023-08-19", "2023-08-23", "2023-08-29",
+    "2023-08-30", "2023-08-31", "2023-09-01",
+)))
 
 
 def release_for(day):
@@ -269,19 +309,13 @@ def mechanism(day, country_code):
         return _LAPLACE_30
     if day in PATCH_DAYS:
         return _LAPLACE_30
-    if str(country_code).upper() == "US" and day <= US_GAP_END:
+    if (str(country_code).upper() == "US" and US_GAP[0] <= day <= US_GAP[1]
+            and day not in US_GAUSSIAN_DAYS):
         return _LAPLACE_30
     return _GAUSSIAN[which]
 
 
 # ── access ───────────────────────────────────────────────────────────────────
-
-_SCHEMA = {
-    "country": pl.Utf8, "country_code": pl.Utf8, "project": pl.Utf8,
-    "page_id": pl.Int64, "page_title": pl.Utf8, "item_id": pl.Utf8,
-    "count": pl.Int64,
-}
-
 
 def resolve_days(days):
     """Days given as dates, datetimes, ISO strings, or an iterable of them."""
@@ -444,8 +478,10 @@ def get_pageviews(days, *, country=None, project=None, page=None,
             raise FileNotFoundError(
                 f"{path} is not mirrored; "
                 f"fetch_pageviews({day.isoformat()!r}) downloads it")
+        if item is not None and "item_id" not in release.schema:
+            continue                    # pre-2017 rows carry no Wikidata ids
         lf = pl.scan_csv(path, separator="\t", has_header=False,
-                         quote_char=None, schema=_SCHEMA)
+                         quote_char=None, schema=release.schema)
         for condition in conditions:
             lf = lf.filter(condition)
         tables.append((day, lf.collect()))
@@ -460,12 +496,15 @@ def get_pageviews(days, *, country=None, project=None, page=None,
             mech = mechs.get(code)
             if mech is None:
                 mech = mechs[code] = mechanism(day, code)
+            page_key = row["page_id"]
+            if page_key is None:            # pre-2017: the title is the identity
+                page_key = row["page_title"]
             value = mech.cell(
                 row["count"],
-                symbol=_symbol_name(day, code, row["project"], row["page_id"]))
+                symbol=_symbol_name(day, code, row["project"], page_key))
             columns["date"].append(day)
             for name in COLUMNS[:-1]:
-                columns[name].append(row[name])
+                columns[name].append(row.get(name))
             columns["mechanism"].append(mech.source)
             columns["variance"].append(mech.variance)
             obs.append(value._obs)
@@ -476,7 +515,7 @@ def get_pageviews(days, *, country=None, project=None, page=None,
         "country": pd.array(columns["country"], dtype="string"),
         "country_code": pd.array(columns["country_code"], dtype="string"),
         "project": pd.array(columns["project"], dtype="string"),
-        "page_id": np.asarray(columns["page_id"], dtype="int64"),
+        "page_id": pd.array(columns["page_id"], dtype="Int64"),
         "page_title": pd.array(columns["page_title"], dtype="string"),
         "item_id": pd.array(columns["item_id"], dtype="string"),
         "mechanism": pd.array(columns["mechanism"], dtype="string"),

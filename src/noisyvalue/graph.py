@@ -302,6 +302,16 @@ class DiscreteLaplaceNode(LocationScaleLatticeNode):
         # Truncation (if any) is not reflected here.
         return Laplace(Name.fresh(), self.loc, self.scale)
 
+    def quantile(self, u):
+        # sympy 1.14's LaplaceDistribution._quantile returns None, so
+        # `sympy.stats.quantile` falls back to an unsolvable integral;
+        # visualization prefers this closed form instead.  Continuous
+        # approximation, like `sympy_rv`; truncation is not reflected.
+        loc = float(self.loc)
+        scale = float(self.scale)
+        u = np.asarray(u, dtype=float)
+        return loc - scale * np.sign(u - 0.5) * np.log1p(-2.0 * np.abs(u - 0.5))
+
 
 def topological_sort_law_nodes(law_nodes):
     law_symbols = {node.expr for node in law_nodes}
