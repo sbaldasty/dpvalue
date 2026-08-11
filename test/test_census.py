@@ -33,9 +33,11 @@ from noisyvalue.census import (
     _pl94_blocks,
     _person_axis_specs,
     dhc_queries,
+    dhc_table_variables,
     get_dhc,
     get_pl94,
     pl94_queries,
+    unsupported_dhc_table_variables,
 )
 from noisyvalue.core import NoisyInt, sample_noisy_values
 from noisyvalue.graph import DiscreteGaussianNode
@@ -123,6 +125,65 @@ def test_dhc_queries_cell_counts_and_sex_coverage():
     with_sex = set(frame[frame["has_sex"]]["query"])
     assert "sex*hispanic" in with_sex
     assert "popSehsdTargetsRelship" not in with_sex
+
+
+_P12_UNSUPPORTED_CODES = {"P12_008N", "P12_009N", "P12_010N",
+                           "P12_032N", "P12_033N", "P12_034N"}
+
+
+def test_dhc_table_variables_p12_has_43_of_49_codes():
+    variables = dhc_table_variables("P12")
+    assert set(variables) == {f"P12_{i:03d}N" for i in range(1, 50)} - _P12_UNSUPPORTED_CODES
+
+
+def test_dhc_table_variables_p12_totals_use_sex_hispanic():
+    variables = dhc_table_variables("P12")
+    assert variables["P12_001N"] == {"query": "sex*hispanic", "label": "Total"}
+    assert variables["P12_002N"]["query"] == "sex*hispanic"
+    assert variables["P12_002N"]["sex"] == ("male",)
+    assert variables["P12_026N"]["query"] == "sex*hispanic"
+    assert variables["P12_026N"]["sex"] == ("female",)
+
+
+def test_dhc_table_variables_p12_only_uses_age_38_groups():
+    variables = dhc_table_variables("P12")
+    age_specs = {code: spec for code, spec in variables.items() if "age" in spec}
+    assert age_specs
+    assert all(spec["query"] == "sex*age_38_groups" for spec in age_specs.values())
+
+
+def test_unsupported_dhc_table_variables_p12_names_the_six_dropped_codes():
+    unsupported = unsupported_dhc_table_variables("P12")
+    assert set(unsupported) == _P12_UNSUPPORTED_CODES
+    assert all(isinstance(reason, str) and reason for reason in unsupported.values())
+    variables = dhc_table_variables("P12")
+    assert not (set(unsupported) & set(variables))
+
+
+def test_dhc_table_variables_p12_age_buckets_partition_zero_to_115_minus_20_21_22to24():
+    variables = dhc_table_variables("P12")
+    label_to_ages = {
+        "0": (0,), "1": (1,), "2": (2,), "3": (3,), "4": (4,), "5": (5,),
+        "6": (6,), "7": (7,), "8": (8,), "9": (9,), "10": (10,), "11": (11,),
+        "12": (12,), "13": (13,), "14": (14,),
+    }
+    for lo, hi in AGE_38_RANGES:
+        if lo != hi:
+            label_to_ages[f"{lo}-{hi}"] = tuple(range(lo, hi + 1))
+
+    expected = sorted(set(range(116)) - {20, 21, 22, 23, 24})
+    for sex, first_code, dropped in (("male", 3, {8, 9, 10}), ("female", 27, {32, 33, 34})):
+        covered = []
+        for i in range(23):
+            code = f"P12_{first_code + i:03d}N"
+            if (first_code + i) in dropped:
+                assert code not in variables
+                continue
+            spec = variables[code]
+            assert spec["sex"] == (sex,)
+            for level in spec["age"]:
+                covered.extend(label_to_ages[level])
+        assert sorted(covered) == expected
 
 
 # ── discrete gaussian truncation ─────────────────────────────────────────────

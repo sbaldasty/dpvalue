@@ -608,6 +608,134 @@ def dhc_queries():
     return pd.DataFrame(rows, columns=["query", "nmf_query_name", "cells", "has_sex"])
 
 
+# Table P12 ("Sex by Age") row order after the Total/Male/Female header
+# rows, as published (checked against the Census API's `groups/P12.json`
+# for the 2020 DHC release): (label, query, age levels). `query` is a
+# `dhc_queries()` name and `age` is the set of that query's age-axis level
+# labels to sum -- the coarsest query whose own binning reproduces the
+# published bucket exactly, so the reconstructed measurement variance
+# matches what was actually released for that shape wherever possible.
+# "sex*age_38_groups" binning matches every published row except three:
+# it has no way to split its single 20-24 bucket into P12's 20 years/21
+# years/22-24 years, since the DP mechanism never measured that split at
+# any coarser resolution than single-year age. `query=None` marks those
+# three rows (and their female mirrors) as unsupported rather than falling
+# back to "detailed": reconstructing them means summing ~5,000 detailed
+# cells marginalized over relgq/hispanic/cenrace, and empirically that sum's
+# posterior comes out nowhere near its own observed value (off by
+# thousands, in either direction depending on `nonnegative`) -- most of
+# those cells fall in PL94 constraint blocks with 3+ still-free cells, where
+# (per `_dhc_pl94_blocks`) the block total is only an upper bound and each
+# cell is otherwise modeled independently, so summing thousands of them
+# doesn't average out the way a tight joint reconstruction would. There is
+# no other DHC query with single-year age resolution, so these three rows
+# have no reliable reconstruction from the NMF at all right now.
+_P12_AGE_BUCKETS = (
+    ("Under 5 years", "sex*age_38_groups", ("0", "1", "2", "3", "4")),
+    ("5 to 9 years", "sex*age_38_groups", ("5", "6", "7", "8", "9")),
+    ("10 to 14 years", "sex*age_38_groups", ("10", "11", "12", "13", "14")),
+    ("15 to 17 years", "sex*age_38_groups", ("15-17",)),
+    ("18 and 19 years", "sex*age_38_groups", ("18-19",)),
+    ("20 years", None, ("20",)),
+    ("21 years", None, ("21",)),
+    ("22 to 24 years", None, ("22", "23", "24")),
+    ("25 to 29 years", "sex*age_38_groups", ("25-29",)),
+    ("30 to 34 years", "sex*age_38_groups", ("30-34",)),
+    ("35 to 39 years", "sex*age_38_groups", ("35-39",)),
+    ("40 to 44 years", "sex*age_38_groups", ("40-44",)),
+    ("45 to 49 years", "sex*age_38_groups", ("45-49",)),
+    ("50 to 54 years", "sex*age_38_groups", ("50-54",)),
+    ("55 to 59 years", "sex*age_38_groups", ("55-59",)),
+    ("60 and 61 years", "sex*age_38_groups", ("60-61",)),
+    ("62 to 64 years", "sex*age_38_groups", ("62-64",)),
+    ("65 and 66 years", "sex*age_38_groups", ("65-66",)),
+    ("67 to 69 years", "sex*age_38_groups", ("67-69",)),
+    ("70 to 74 years", "sex*age_38_groups", ("70-74",)),
+    ("75 to 79 years", "sex*age_38_groups", ("75-79",)),
+    ("80 to 84 years", "sex*age_38_groups", ("80-84",)),
+    ("85 years and over", "sex*age_38_groups",
+     ("85-89", "90-94", "95-99", "100-104", "105-109", "110-115")),
+)
+
+_P12_UNSUPPORTED_REASON = (
+    "no DHC query workload reconstructs this cell reliably: only the "
+    "\"detailed\" query has single-year age resolution, and summing the "
+    "thousands of detailed cells this bucket marginalizes over produces a "
+    "posterior far from its own observed value (most of those cells fall "
+    "in PL94 constraint blocks with 3+ free cells, where the block total "
+    "is only an upper bound rather than a tight joint constraint -- see "
+    "dhc_table_variables()'s docstring)"
+)
+
+
+def dhc_table_variables(table="P12"):
+    """Census variable-code -> `get_dhc` query/filter crosswalk for a published table.
+
+    Maps literal `tidycensus`-style variable codes (e.g. `"P12_002N"`) from
+    a published decennial table to the `get_dhc` query name and per-axis
+    filter levels that reconstruct that cell from the actual NMF
+    measurements. This is what lets a caller pass Census's own variable
+    codes instead of naming a query plus axis filters directly -- see
+    `_P12_AGE_BUCKETS` above for how each row picks its query.
+
+    Only `table="P12"` (Sex by Age) is implemented so far; other published
+    tables would each need their own row-to-query mapping worked out and
+    checked the same way before being added here. Six of P12's 49 codes
+    (Male/Female 20 years, 21 years, and 22 to 24 years) aren't included
+    either, for a different reason: see `_P12_AGE_BUCKETS` and
+    `unsupported_dhc_table_variables()`.
+
+    Returns a dict keyed by variable code. Each value is a dict with a
+    `"query"` entry (a `dhc_queries()` name), a `"label"` entry (the
+    published row label), and zero or more `axis: (level, ...)` entries --
+    the cells summed for that code are those matching every listed axis's
+    level set; axes not listed are summed over entirely. Multiple levels
+    for one axis mean summing several NMF cells to reconstruct one wider
+    published bucket.
+    """
+    if table != "P12":
+        raise ValueError(f'dhc_table_variables only supports table="P12" (got "{table}")')
+
+    variables = {
+        "P12_001N": {"query": "sex*hispanic", "label": "Total"},
+        "P12_002N": {"query": "sex*hispanic", "label": "Male", "sex": ("male",)},
+        "P12_026N": {"query": "sex*hispanic", "label": "Female", "sex": ("female",)},
+    }
+    for sex, total_code in (("male", 2), ("female", 26)):
+        for i, (label, query, age) in enumerate(_P12_AGE_BUCKETS):
+            if query is None:
+                continue
+            code = f"P12_{total_code + 1 + i:03d}N"
+            variables[code] = {
+                "query": query, "label": f"{sex.capitalize()}: {label}",
+                "sex": (sex,), "age": age,
+            }
+    return variables
+
+
+def unsupported_dhc_table_variables(table="P12"):
+    """Codes `dhc_table_variables()` deliberately omits, with why.
+
+    Returns a dict keyed by variable code (a subset of the table's full
+    code range that `dhc_table_variables()` doesn't return) to a
+    human-readable reason string. Meant for producing a clear error message
+    when a caller asks for one of these, rather than an ambiguous "unknown
+    code".
+    """
+    if table != "P12":
+        raise ValueError(
+            f'unsupported_dhc_table_variables only supports table="P12" (got "{table}")')
+
+    unsupported = {}
+    for sex, total_code in (("male", 2), ("female", 26)):
+        for i, (label, query, age) in enumerate(_P12_AGE_BUCKETS):
+            if query is not None:
+                continue
+            code = f"P12_{total_code + 1 + i:03d}N"
+            unsupported[code] = _P12_UNSUPPORTED_REASON
+    return unsupported
+
+
 def get_pl94(geography, queries, state=None, *, table="person",
              root=DEFAULT_ROOT, nonnegative=True, apply_constraints=True,
              real_block_groups=False):

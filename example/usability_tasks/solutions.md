@@ -8,9 +8,12 @@ data and then calling `noisy_credible_interval()` / `noisy_prob()` from the
 pkgload::load_all("r/noisyvalue", quiet = TRUE)
 noisyvalue_init(venv = ".venv", src = "src")
 
-population <- get_dhc("county", "sex*hispanic", state = "VT", county = "007")
-male <- sum(population$value[population$sex == "male"])
-female <- sum(population$value[population$sex == "female"])
+population <- get_decennial(
+  geography = "county",
+  variables = c(male = "P12_002N", female = "P12_026N"),
+  year = 2020, sumfile = "dhc", state = "VT", county = "007")
+male <- population$value[[which(population$variable == "male")]]
+female <- population$value[[which(population$variable == "female")]]
 
 noisy_credible_interval(male, n = 20000, rng = 100)
 noisy_prob(male > female, n = 20000, rng = 102)
