@@ -1,8 +1,9 @@
 import numpy as np
+import sympy as sp
 
 from . import util
 from itertools import count
-from sympy import Symbol
+from sympy import Add, Integer, Mul, Symbol
 from sympy import sympify
 from sympy.stats import Laplace, Normal
 from sympy.stats.frv_types import BinomialDistribution, rv
@@ -188,7 +189,6 @@ class BinomialNode(NoiseNode):
         return np.where(valid, result, np.nan)
 
 
-
 class LocationScaleLatticeNode(NoiseNode):
     """Shared sampling machinery for noise discretized onto the integer
     lattice, truncated to `[low, high]`. Pass `-oo`/`oo` for an unbounded
@@ -324,3 +324,77 @@ def topological_sort_law_nodes(law_nodes):
             resolved.add(sym)
             remaining.discard(sym)
     return tuple(ordered)
+
+
+def _extract_coeff_symbol(expr):
+    """Return (coefficient, symbol) if expr is c*sym or sym, else (None, None)."""
+    if isinstance(expr, Symbol):
+        return Integer(1), expr
+    if isinstance(expr, Mul):
+        nums = [a for a in expr.args if a.is_number]
+        syms = [a for a in expr.args if isinstance(a, Symbol)]
+        rest = [a for a in expr.args if not a.is_number and not isinstance(a, Symbol)]
+        if len(syms) == 1 and not rest:
+            coeff = Mul(*nums) if nums else Integer(1)
+            return coeff, syms[0]
+    return None, None
+
+
+class ConsolidationRule:
+    """Base class for noise-combination rules used in consolidation.
+
+    Concrete subclasses are auto-registered in `ConsolidationRule.registry`,
+    which is the default rule set consolidate() applies.
+    """
+
+    registry = []
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        ConsolidationRule.registry.append(cls())
+
+    def matches(self, expr, symbol_to_node, eligible):
+        raise NotImplementedError
+
+    def apply(self, expr, symbol_to_node, eligible):
+        raise NotImplementedError
+
+
+class NormalSumRule(ConsolidationRule):
+    """Collapse a linear combination of independent normal noise symbols into one."""
+
+    def _parse(self, expr, symbol_to_node, eligible):
+        if not isinstance(expr, Add):
+            return None, None
+        normal_terms = []
+        other_args = []
+        for arg in expr.args:
+            coeff, sym = _extract_coeff_symbol(arg)
+            if (
+                sym is not None
+                and sym in eligible
+                and sym in symbol_to_node
+                and isinstance(symbol_to_node[sym], NoiseNode)
+                and isinstance(symbol_to_node[sym], NormalNode)
+                and not symbol_to_node[sym].deps
+            ):
+                normal_terms.append((coeff, symbol_to_node[sym]))
+            else:
+                other_args.append(arg)
+        if len(normal_terms) < 2:
+            return None, None
+        return normal_terms, other_args
+
+    def matches(self, expr, symbol_to_node, eligible):
+        terms, _ = self._parse(expr, symbol_to_node, eligible)
+        return terms is not None
+
+    def apply(self, expr, symbol_to_node, eligible):
+        normal_terms, other_args = self._parse(expr, symbol_to_node, eligible)
+        combined_mu = sum(c * node.loc for c, node in normal_terms)
+        combined_sigma = sp.sqrt(sum((c * node.scale) ** 2 for c, node in normal_terms))
+        new_node = NormalNode.create(loc=combined_mu, scale=combined_sigma)
+        symbol_to_node[new_node.expr] = new_node
+        for _, node in normal_terms:
+            eligible.discard(node.expr)
+        return Add(new_node.expr, *other_args)

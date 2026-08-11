@@ -9,6 +9,7 @@ from sympy import sympify
 
 from .graph import NormalNode
 from .graph import BinomialNode
+from .graph import ConsolidationRule
 from .graph import DiscreteGaussianNode
 from .graph import DiscreteLaplaceNode
 from .graph import DerivedNode
@@ -103,74 +104,7 @@ def _sampler_inputs_from_roots(values):
     return all_thetas, theta_eqns, ordered_law_nodes, independent_noise_symbols, independent_noise
 
 
-def _extract_coeff_symbol(expr):
-    """Return (coefficient, symbol) if expr is c*sym or sym, else (None, None)."""
-    if isinstance(expr, sp.Symbol):
-        return sp.Integer(1), expr
-    if isinstance(expr, sp.Mul):
-        nums = [a for a in expr.args if a.is_number]
-        syms = [a for a in expr.args if isinstance(a, sp.Symbol)]
-        rest = [a for a in expr.args if not a.is_number and not isinstance(a, sp.Symbol)]
-        if len(syms) == 1 and not rest:
-            coeff = sp.Mul(*nums) if nums else sp.Integer(1)
-            return coeff, syms[0]
-    return None, None
-
-
-class ConsolidationRule:
-    """Base class for noise-combination rules used by consolidate()."""
-
-    def matches(self, expr, symbol_to_node, eligible):
-        raise NotImplementedError
-
-    def apply(self, expr, symbol_to_node, eligible):
-        raise NotImplementedError
-
-
-class NormalSumRule(ConsolidationRule):
-    """Collapse a linear combination of independent normal noise symbols into one."""
-
-    def _parse(self, expr, symbol_to_node, eligible):
-        if not isinstance(expr, sp.Add):
-            return None, None
-        normal_terms = []
-        other_args = []
-        for arg in expr.args:
-            coeff, sym = _extract_coeff_symbol(arg)
-            if (
-                sym is not None
-                and sym in eligible
-                and sym in symbol_to_node
-                and isinstance(symbol_to_node[sym], NoiseNode)
-                and isinstance(symbol_to_node[sym], NormalNode)
-                and not symbol_to_node[sym].deps
-            ):
-                normal_terms.append((coeff, symbol_to_node[sym]))
-            else:
-                other_args.append(arg)
-        if len(normal_terms) < 2:
-            return None, None
-        return normal_terms, other_args
-
-    def matches(self, expr, symbol_to_node, eligible):
-        terms, _ = self._parse(expr, symbol_to_node, eligible)
-        return terms is not None
-
-    def apply(self, expr, symbol_to_node, eligible):
-        normal_terms, other_args = self._parse(expr, symbol_to_node, eligible)
-        combined_mu = sum(c * node.loc for c, node in normal_terms)
-        combined_sigma = sp.sqrt(sum((c * node.scale) ** 2 for c, node in normal_terms))
-        new_node = NormalNode.create(loc=combined_mu, scale=combined_sigma)
-        symbol_to_node[new_node.expr] = new_node
-        for _, node in normal_terms:
-            eligible.discard(node.expr)
-        return sp.Add(new_node.expr, *other_args)
-
-
-DEFAULT_RULES = [NormalSumRule()]
-
-
-def consolidate(*values, rules=None):
+def consolidate(*values):
     """Return copies of values backed by a simplified noise graph.
 
     Noise symbols that can be combined by a rule are merged into fewer nodes.
@@ -181,8 +115,7 @@ def consolidate(*values, rules=None):
     left untouched, preserving correlations between the consolidated values.
     """
     values = util.as_nonempty_tuple(values, NoisyValue)
-    if rules is None:
-        rules = DEFAULT_RULES
+    rules = ConsolidationRule.registry
 
     # Resolve latent variables so each expression is purely over noise symbols.
     all_thetas, theta_eqns, _, _, _ = _sampler_inputs_from_roots(values)

@@ -656,13 +656,6 @@ def test_consolidate_single_value_nothing_to_combine():
     assert _noise_node_count(x_cons) == 1
 
 
-def test_consolidate_empty_rules_leaves_nodes_unchanged():
-    x = _draw(1.0)
-    y = _draw(2.0)
-    (z_cons,) = consolidate(x + y, rules=[])
-    assert _noise_node_count(z_cons) == 2
-
-
 def test_consolidate_samples_have_correct_mean():
     x = _draw(1.0)
     y = _draw(2.0)
