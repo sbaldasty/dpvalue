@@ -32,7 +32,7 @@ import sympy as sp
 
 from ..core import NoisyInt
 from ..graph import DerivedNode
-from ..graph import DiscreteGaussianNode
+from ..graph import DiscreteGaussianNode, DiscreteLaplaceNode
 from .evidence import BoundedHistogram, ExactHistogram, ZeroRegion
 
 
@@ -62,55 +62,73 @@ class NoiseFamily:
         return None
 
 
-class DiscreteGaussianFamily(NoiseFamily):
-    """The 2020 DAS mechanism: each query noised independently, discrete Gaussian.
+class LatticeFamily(NoiseFamily):
+    """Shared cell construction for noise living on the integer lattice.
 
-    Under a flat prior a cell's posterior is a discrete Gaussian centred at the
-    observation, so it is encoded directly as `obs - eps` rather than through a
-    latent-plus-constraint pair; building and sampling large collections of
-    cells then avoids the symbolic solve step entirely.
+    Under a flat prior a cell's posterior is the noise law re-centred at the
+    observation, so it is encoded directly as `obs - eps` rather than through
+    a latent-plus-constraint pair; building and sampling large collections of
+    cells then avoids the symbolic solve step entirely.  A concrete family
+    names its node class, how the release's variance maps to the node's scale
+    parameter, and how far outside the centre a bound is provably inert.
     """
 
-    name = "discrete gaussian"
+    node_cls = None
 
     # A bound this far outside the posterior's centre is not merely unlikely
-    # to bind, it is *provably* inert: `DiscreteGaussianNode._draw` only ever
-    # puts support on a grid of max(50, 6 sd) either side, so a bound beyond
+    # to bind, it is *provably* inert: the node's `_draw` only ever puts
+    # support on a grid of `grid_width(scale)` either side, so a bound beyond
     # that leaves the sampled distribution bit-for-bit unchanged. Dropping it
     # keeps the node's params free of symbols, which skips the (small) bound
     # substitution cost at sample time.  This matters because evidence is
     # applied generically -- a query that marginalizes an axis away picks up
     # the sum of every category bound on it, a real but useless number a
     # per-dataset rule would simply not have bothered to compute.
-    INERT_SDS = 8.0
+    INERT_SCALES = None
     INERT_FLOOR = 60.0
+
+    def scale_from_variance(self, variance):
+        """The node's scale parameter for a noise law of this variance."""
+        raise NotImplementedError
 
     def cell(self, obs, variance, lo=None, hi=None):
         obs = int(obs)
-        sd = math.sqrt(float(variance))
+        scale = self.scale_from_variance(float(variance))
         if lo is not None and hi is not None and lo == hi:
             return exact_count(lo)
-        lo, hi = self._drop_inert(obs, sd, lo, hi)
+        lo, hi = self._drop_inert(obs, scale, lo, hi)
         # theta = obs - eps lies in [lo, hi] iff eps lies in [obs-hi, obs-lo].
         low = -sp.oo if hi is None else sp.Integer(obs - int(hi))
         high = sp.oo if lo is None else sp.Integer(obs - int(lo))
-        node = DiscreteGaussianNode.create(
-            loc=sp.Integer(0), scale=sp.Float(sd), low=low, high=high)
+        node = self.node_cls.create(
+            loc=sp.Integer(0), scale=sp.Float(scale), low=low, high=high)
         return NoisyInt(obs, DerivedNode(sp.Integer(obs) - node.expr, deps=(node,)))
 
-    def _drop_inert(self, obs, sd, lo, hi):
+    def _drop_inert(self, obs, scale, lo, hi):
         """Discard bounds that lie outside the sampled support entirely."""
         centre = obs
         if lo is not None:
             centre = max(centre, lo)
         if hi is not None:
             centre = min(centre, hi)
-        slack = max(self.INERT_FLOOR, self.INERT_SDS * sd)
+        slack = max(self.INERT_FLOOR, self.INERT_SCALES * scale)
         if lo is not None and lo < centre - slack:
             lo = None
         if hi is not None and hi > centre + slack:
             hi = None
         return lo, hi
+
+
+class DiscreteGaussianFamily(LatticeFamily):
+    """The 2020 DAS mechanism: each query noised independently, discrete Gaussian."""
+
+    name = "discrete gaussian"
+    node_cls = DiscreteGaussianNode
+    # the node's grid spans 6 sd either side, so 8 is safely beyond it
+    INERT_SCALES = 8.0
+
+    def scale_from_variance(self, variance):
+        return math.sqrt(float(variance))
 
     def pair(self, obs_a, obs_b, variance, total, nonnegative):
         """Closed form for two cells with a known exact sum.
@@ -131,6 +149,38 @@ class DiscreteGaussianFamily(NoiseFamily):
         a_root = DerivedNode(sp.Integer(obs_a) - node.expr, deps=(node,))
         b_root = DerivedNode(sp.Integer(total) - a_root.expr, deps=(a_root,))
         return NoisyInt(obs_a, a_root), NoisyInt(obs_b, b_root)
+
+
+class DiscreteLaplaceFamily(LatticeFamily):
+    """The geometric mechanism of pure epsilon-DP releases, e.g. Wikimedia's
+    pageview data: integer noise with pmf proportional to exp(-|k|/scale),
+    where scale = sensitivity / epsilon.
+
+    As for every family, `cell` takes the noise's true sampling variance;
+    `variance_from_scale` converts a release's published scale, and the two
+    conversions are exact inverses.  There is no `pair` closed form: two
+    geometric-noised cells conditioned on their exact sum follow a
+    piecewise-geometric law that is not again a lattice location-scale
+    family, so exact totals over pairs fall through to the block strategy
+    like any larger block.
+    """
+
+    name = "discrete laplace"
+    node_cls = DiscreteLaplaceNode
+    # the node's grid spans 30 scales either side, so 32 is safely beyond it
+    INERT_SCALES = 32.0
+
+    @staticmethod
+    def variance_from_scale(scale):
+        """Sampling variance of two-sided geometric noise with this scale."""
+        p = math.exp(-1.0 / float(scale))
+        return 2.0 * p / (1.0 - p) ** 2
+
+    def scale_from_variance(self, variance):
+        # invert 2p/(1-p)^2 = v for p in (0, 1), then scale = -1/log(p)
+        v = float(variance)
+        p = (v + 1.0 - math.sqrt(2.0 * v + 1.0)) / v
+        return -1.0 / math.log(p)
 
 
 # ── strategies for blocks of three or more ───────────────────────────────────

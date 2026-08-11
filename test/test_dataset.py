@@ -14,6 +14,7 @@ from noisyvalue.dataset import (
     BoundedHistogram,
     BoundOnly,
     DiscreteGaussianFamily,
+    DiscreteLaplaceFamily,
     ExactHistogram,
     GeoLevel,
     GeographyUnavailable,
@@ -392,6 +393,58 @@ def test_dropping_an_inert_bound_leaves_the_posterior_unchanged():
     bounded = family.cell(500, 16.0, lo=0, hi=10 ** 9)
     assert np.array_equal(plain.sample(500, rng=4).draws,
                           bounded.sample(500, rng=4).draws)
+
+
+# ── the discrete Laplace family ──────────────────────────────────────────────
+
+def test_laplace_scale_and_variance_conversions_are_inverse():
+    family = DiscreteLaplaceFamily()
+    for scale in (1.0, 30.0, 300.0):
+        variance = family.variance_from_scale(scale)
+        assert family.scale_from_variance(variance) == pytest.approx(scale)
+
+
+def test_laplace_cell_posterior_is_centred_at_the_observation():
+    family = DiscreteLaplaceFamily()
+    variance = family.variance_from_scale(30.0)   # Wikimedia's historical scale
+    draws = family.cell(1000, variance).sample(8000, rng=1).draws
+
+    assert draws.dtype == int
+    assert draws.mean() == pytest.approx(1000.0, abs=2.0)
+    assert draws.var() == pytest.approx(variance, rel=0.1)
+
+
+def test_laplace_cell_respects_a_nonnegativity_bound():
+    family = DiscreteLaplaceFamily()
+    variance = family.variance_from_scale(30.0)
+    draws = family.cell(40, variance, lo=0).sample(4000, rng=3).draws
+
+    assert draws.min() >= 0
+
+
+def test_laplace_cell_pinned_by_equal_bounds_is_exact():
+    family = DiscreteLaplaceFamily()
+    cell = family.cell(40, 1800.0, lo=7, hi=7)
+
+    assert cell._obs == 7
+    assert np.all(cell.sample(50, rng=4).draws == 7)
+
+
+def test_laplace_dropping_an_inert_bound_leaves_the_posterior_unchanged():
+    family = DiscreteLaplaceFamily()
+    # scale 5: the inert slack is max(60, 32 * 5) = 160, so both bounds are
+    # provably outside the sampled support and must be dropped
+    variance = family.variance_from_scale(5.0)
+    plain = family.cell(500, variance)
+    bounded = family.cell(500, variance, lo=0, hi=10 ** 9)
+
+    assert np.array_equal(plain.sample(500, rng=4).draws,
+                          bounded.sample(500, rng=4).draws)
+
+
+def test_laplace_family_has_no_pair_closed_form():
+    family = DiscreteLaplaceFamily()
+    assert family.pair(10, 20, 1800.0, 25, True) is None
 
 
 def test_a_measurement_with_no_released_query_must_be_fully_pinned():

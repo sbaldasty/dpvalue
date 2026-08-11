@@ -34,7 +34,8 @@ from .catalog import Measurement, MeasurementRow, Product, Source, Universe
 from .evidence import BoundedHistogram, Evidence, ExactHistogram, Region
 from .evidence import ZeroRegion, marginal_coarsening
 from .partition import JoinBlock, Partition
-from .solve import BlockStrategy, BoundOnly, DiscreteGaussianFamily, NoiseFamily
+from .solve import BlockStrategy, BoundOnly, DiscreteGaussianFamily
+from .solve import DiscreteLaplaceFamily, NoiseFamily
 from .solve import exact_count, solve
 from .view import View
 
@@ -48,7 +49,7 @@ __all__ = [x.__name__ for x in [
     Evidence, Region, ZeroRegion, ExactHistogram, BoundedHistogram,
     marginal_coarsening,
     # solving
-    NoiseFamily, DiscreteGaussianFamily, BlockStrategy, BoundOnly,
-    solve, exact_count,
+    NoiseFamily, DiscreteGaussianFamily, DiscreteLaplaceFamily,
+    BlockStrategy, BoundOnly, solve, exact_count,
     # views
     View]]

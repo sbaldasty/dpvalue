@@ -17,6 +17,7 @@ from noisyvalue.graph import Node
 from noisyvalue.graph import NormalNode
 from noisyvalue.graph import NoiseNode
 from noisyvalue.graph import DiscreteGaussianNode
+from noisyvalue.graph import DiscreteLaplaceNode
 
 
 _rng_factory = lambda: default_rng(42)
@@ -560,6 +561,52 @@ def test_noisyint_discrete_gaussian_noisy_scale_propagates_uncertainty():
 
     assert draws.mean() == pytest.approx(0.0, abs=0.5)
     assert draws.std() == pytest.approx(10.0, abs=1.5)
+
+
+# ── NoisyInt.discrete_laplace ─────────────────────────────────────────────────
+
+def test_noisyint_discrete_laplace_returns_noisyint_with_int_obs():
+    k = NoisyInt.discrete_laplace(10, rng=42)
+
+    assert isinstance(k, NoisyInt)
+    assert isinstance(k._obs, int)
+
+
+def test_noisyint_discrete_laplace_root_is_noise_node():
+    k = NoisyInt.discrete_laplace(10, rng=42)
+
+    assert isinstance(k._root, DiscreteLaplaceNode)
+
+
+def test_noisyint_discrete_laplace_same_rng_gives_same_obs():
+    assert NoisyInt.discrete_laplace(10, rng=42)._obs == NoisyInt.discrete_laplace(10, rng=42)._obs
+
+
+def test_noisyint_discrete_laplace_samples_have_correct_mean_and_variance():
+    k = NoisyInt.discrete_laplace(20, rng=42)
+    draws = k.sample(n=8000, rng=99).draws
+
+    # two-sided geometric with scale 20: variance = 2p/(1-p)^2, p = e^(-1/20)
+    p = np.exp(-1 / 20)
+    assert draws.mean() == pytest.approx(0.0, abs=1.5)
+    assert draws.var() == pytest.approx(2 * p / (1 - p) ** 2, rel=0.1)
+
+
+def test_noisyint_discrete_laplace_tails_are_heavier_than_gaussian():
+    # P(|X| > 4 sd) is ~3.5e-3 for Laplace noise but ~6e-5 for Gaussian;
+    # this is what distinguishes the log-density from the Gaussian node's
+    k = NoisyInt.discrete_laplace(30, rng=42)
+    draws = k.sample(n=20000, rng=99).draws
+
+    assert (np.abs(draws) > 4 * draws.std()).mean() > 1e-3
+
+
+def test_noisyint_discrete_laplace_respects_truncation_bounds():
+    k = NoisyInt.discrete_laplace(10, low=0, high=5, rng=1)
+    draws = k.sample(n=500, rng=99).draws
+
+    assert draws.min() >= 0
+    assert draws.max() <= 5
 
 
 def test_mixing_noisy_types_in_one_expression_keeps_every_operand_noisy():
