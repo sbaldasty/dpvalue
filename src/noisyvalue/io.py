@@ -13,8 +13,7 @@ from sympy.logic.boolalg import BooleanAtom
 
 from . import util
 from .analysis import NoisyContingencyTable
-from .consolidate import consolidate
-from .core import NoisyFloat, NoisyInt, NoisyBool
+from .core import NoisyFloat, NoisyInt, NoisyBool, consolidate
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, DiscreteLaplaceNode, LatentNode, NormalNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
