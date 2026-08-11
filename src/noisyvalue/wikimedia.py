@@ -44,6 +44,12 @@ its boundary dates were validated empirically against the released files
 (the minimum released count in a group of rows reveals its threshold, and
 hence its mechanism -- see test_wikimedia.py).
 
+The releases' own documentation is wrong or silent about a surprising amount
+of this -- the file format, the schema, the solidity of the US gap, the
+Turkish exclusion, the bot traffic, the noise variance itself.
+`docs/wikimedia-errata.md` records every departure and how it was
+established.
+
 Suppression: a row is released only when its noisy count clears the
 threshold.  For a released row the flat-prior posterior is unaffected by
 that selection, since the noisy value itself is observed; it is simply
@@ -58,6 +64,7 @@ import hashlib
 import os
 import urllib.error
 import urllib.request
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -262,6 +269,12 @@ _TIER_VERSIONS = (
 # it outright.
 NEVER_PUBLISHED = frozenset({"TR"})
 
+# How far the vendored constants -- tier versions, patch routing, missing
+# days -- have been validated against the releases.  Days beyond it are
+# routed with the newest known protection list, which the next recalibration
+# would invalidate, so the access functions warn there.
+CODEBOOK_AS_OF = dt.date(2026, 8, 11)
+
 
 def tier(day, country_code):
     """A country's risk tier on a given day: "lower", "medium", "higher",
@@ -355,6 +368,15 @@ def _require_release(day):
     release = release_for(day)
     if release is None:
         raise ValueError(f"no pageview release covers {day.isoformat()}")
+    if day > CODEBOOK_AS_OF:
+        warnings.warn(
+            "this day postdates the codebook's last validation "
+            f"({CODEBOOK_AS_OF.isoformat()}).  If Wikimedia has revised the "
+            "Country and Territory Protection List since, tier variances and "
+            "thresholds for new rows may be stale; "
+            "test_live_codebook_matches_the_current_protection_list checks, "
+            "and docs/wikimedia-errata.md describes how to update the "
+            "codebook.", stacklevel=3)
     if day in MISSING_DAYS:
         raise ValueError(
             f"{day.isoformat()} was never released: the pipeline failed and "

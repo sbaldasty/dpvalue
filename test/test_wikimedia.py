@@ -276,6 +276,13 @@ def test_different_cells_are_independent_random_variables(root):
     assert not np.array_equal(batch_a.draws, batch_b.draws)
 
 
+def test_days_beyond_the_codebook_validation_are_warned_about(root):
+    future = wm.CODEBOOK_AS_OF + dt.timedelta(days=30)
+    with pytest.warns(UserWarning, match="postdates the codebook"):
+        with pytest.raises(FileNotFoundError):
+            wm.get_pageviews(future, root=root)
+
+
 def test_get_refuses_an_unmirrored_day(root):
     with pytest.raises(FileNotFoundError, match="fetch_pageviews"):
         wm.get_pageviews("2024-03-02", root=root)
