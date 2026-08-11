@@ -8,12 +8,16 @@ were all confirmed by probing the days on either side.
 """
 
 import datetime as dt
+import io
+import os
 
 import numpy as np
 import pytest
 
 from noisyvalue import wikimedia as wm
+from noisyvalue.core import sample_noisy_values
 from noisyvalue.dataset import DiscreteLaplaceFamily
+from noisyvalue.pandas_ext import NoisyIntArray
 
 
 def d(s):
@@ -136,3 +140,170 @@ def test_a_released_count_becomes_a_nonnegative_posterior_at_the_observation():
     assert draws.min() >= 0
     assert draws.mean() == pytest.approx(600.0, rel=0.05)
     assert draws.std() == pytest.approx(np.sqrt(m.variance), rel=0.1)
+
+
+# ── reading mirrored files ───────────────────────────────────────────────────
+
+@pytest.fixture
+def root(tmp_path):
+    def write(dataset, day, rows):
+        folder = tmp_path / dataset
+        folder.mkdir(parents=True, exist_ok=True)
+        text = "".join("\t".join(str(f) for f in row) + "\n" for row in rows)
+        (folder / f"{day}.tsv").write_text(text, encoding="utf-8")
+
+    write("country_project_page", "2024-03-01", [
+        ("Iceland", "IS", "is.wikipedia", 111, "Reykjavík", "Q1764", 205),
+        ("Iceland", "IS", "en.wikipedia", 222, "Golden_Circle_(Iceland)",
+         "Q1755509", 149),
+        ("Bangladesh", "BD", "bn.wikipedia", 333, "ঢাকা",
+         "Q1354", 780),
+        ("Russia", "RU", "ru.wikipedia", 444, 'Page_with_"quotes"', "", 1420),
+    ])
+    write("country_project_page", "2023-05-01", [
+        ("United States", "US", "en.wikipedia", 555, "Earth", "Q2", 4021),
+        ("France", "FR", "fr.wikipedia", 666, "Terre", "Q2", 512),
+    ])
+    write("country_project_page_historical", "2018-06-01", [
+        ("Germany", "DE", "de.wikipedia", 777, "Erde", "Q2", 913),
+    ])
+    return str(tmp_path)
+
+
+def test_get_pageviews_returns_a_tidy_frame(root):
+    frame = wm.get_pageviews("2024-03-01", root=root)
+
+    assert list(frame.columns) == [
+        "date", "country", "country_code", "project", "page_id",
+        "page_title", "item_id", "mechanism", "value", "variance"]
+    assert len(frame) == 4
+    assert isinstance(frame["value"].array, NoisyIntArray)
+    assert list(frame["value"].array._obs) == [205, 149, 780, 1420]
+    assert set(frame["date"].dt.date) == {d("2024-03-01")}
+
+
+def test_variance_follows_the_tier_and_the_era(root):
+    frame = wm.get_pageviews("2024-03-01", root=root)
+    got = dict(zip(frame["country_code"], frame["variance"]))
+    assert got["IS"] == pytest.approx(10 / (2 * 1.505e-2))
+    assert got["BD"] == pytest.approx(10 / (2 * 6.166e-4))
+    assert got["RU"] == pytest.approx(10 / (2 * 1.546e-4))
+
+    frame = wm.get_pageviews("2018-06-01", root=root)
+    assert frame["variance"].iloc[0] == pytest.approx(
+        DiscreteLaplaceFamily.variance_from_scale(30.0))
+
+
+def test_us_gap_rows_carry_the_geometric_mechanism(root):
+    frame = wm.get_pageviews("2023-05-01", root=root)
+    mechs = dict(zip(frame["country_code"], frame["mechanism"]))
+    assert "geometric" in mechs["US"]
+    assert "Gaussian" in mechs["FR"]
+
+
+def test_filters_match_names_codes_titles_projects_and_items(root):
+    assert len(wm.get_pageviews("2024-03-01", country="is", root=root)) == 2
+    assert len(wm.get_pageviews("2024-03-01", country="Iceland", root=root)) == 2
+    page = wm.get_pageviews("2024-03-01", page="Golden Circle (Iceland)",
+                            root=root)
+    assert list(page["page_id"]) == [222]
+    proj = wm.get_pageviews("2024-03-01",
+                            project=["is.wikipedia", "bn.wikipedia"], root=root)
+    assert len(proj) == 2
+    item = wm.get_pageviews("2023-05-01", item="Q2", root=root)
+    assert len(item) == 2
+    assert wm.get_pageviews("2024-03-01", country="Narnia", root=root).empty
+
+
+def test_quotes_in_titles_are_read_literally(root):
+    frame = wm.get_pageviews("2024-03-01", country="RU", root=root)
+    assert list(frame["page_title"]) == ['Page_with_"quotes"']
+    assert frame["item_id"].isna().all()
+
+
+def test_values_sample_around_the_released_count(root):
+    value = wm.get_pageviews("2024-03-01", country="BD", root=root)["value"][0]
+    draws = value.sample(2000, rng=11).draws
+
+    assert draws.min() >= 0
+    assert draws.mean() == pytest.approx(780, abs=10)
+
+
+def test_repeated_reads_are_one_random_variable(root):
+    a = wm.get_pageviews("2024-03-01", country="BD", root=root)["value"][0]
+    b = wm.get_pageviews("2024-03-01", country="BD", root=root)["value"][0]
+    batch_a, batch_b = sample_noisy_values(a, b, n=200, rng=5)
+
+    assert np.array_equal(batch_a.draws, batch_b.draws)
+
+
+def test_different_cells_are_independent_random_variables(root):
+    frame = wm.get_pageviews("2024-03-01", country="IS", root=root)
+    batch_a, batch_b = sample_noisy_values(
+        frame["value"][0], frame["value"][1], n=200, rng=5)
+
+    assert not np.array_equal(batch_a.draws, batch_b.draws)
+
+
+def test_get_refuses_an_unmirrored_day(root):
+    with pytest.raises(FileNotFoundError, match="fetch_pageviews"):
+        wm.get_pageviews("2024-03-02", root=root)
+
+
+def test_get_refuses_a_never_released_day(root):
+    with pytest.raises(ValueError, match="never released"):
+        wm.get_pageviews("2020-07-19", root=root)
+
+
+def test_days_between_skips_the_never_released_days():
+    days = wm.days_between("2020-07-17", "2020-07-22")
+
+    assert d("2020-07-19") not in days
+    assert d("2020-07-20") not in days
+    assert len(days) == 4
+
+
+# ── mirroring ────────────────────────────────────────────────────────────────
+
+class _Response:
+    def __init__(self, data):
+        self._data = io.BytesIO(data)
+
+    def read(self, n=-1):
+        return self._data.read(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_fetch_mirrors_into_the_release_layout(monkeypatch, tmp_path):
+    payload = b"Germany\tDE\tde.wikipedia\t777\tErde\tQ2\t913\n"
+
+    def fake_urlopen(request, timeout=None):
+        assert request.full_url == (
+            "https://analytics.wikimedia.org/published/datasets/"
+            "country_project_page_historical/2018-06-01.tsv")
+        return _Response(payload)
+
+    monkeypatch.setattr(wm.urllib.request, "urlopen", fake_urlopen)
+    paths = wm.fetch_pageviews("2018-06-01", root=str(tmp_path))
+
+    expected = os.path.join(
+        str(tmp_path), "country_project_page_historical", "2018-06-01.tsv")
+    assert paths == [expected]
+    with open(expected, "rb") as f:
+        assert f.read() == payload
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("an already-mirrored day was re-downloaded")
+
+    monkeypatch.setattr(wm.urllib.request, "urlopen", refuse)
+    assert wm.fetch_pageviews("2018-06-01", root=str(tmp_path)) == paths
+
+
+def test_fetch_refuses_a_never_released_day(tmp_path):
+    with pytest.raises(ValueError, match="never released"):
+        wm.fetch_pageviews("2022-10-19", root=str(tmp_path))

@@ -8,6 +8,7 @@ from .core import noisy_value_sampler, sample_noisy_values
 from .dataset import Product, View
 from .io import load, save
 from .visual import plot_posterior
+from .wikimedia import fetch_pageviews, get_pageviews
 
 __all__ = [x.__name__ for x in [
     # Noisy value types
@@ -20,6 +21,8 @@ __all__ = [x.__name__ for x in [
     Product, View,
     # Census
     get_pl94, pl94_queries, get_dhc, dhc_queries, fetch_dhc,
+    # Wikimedia
+    fetch_pageviews, get_pageviews,
     # IO
     load, save,
     # Visualization

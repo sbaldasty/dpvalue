@@ -53,8 +53,16 @@ class NoiseFamily:
 
     name = "unknown"
 
-    def cell(self, obs, variance, lo=None, hi=None):
-        """Posterior for one measured cell, truncated to `[lo, hi]`."""
+    def cell(self, obs, variance, lo=None, hi=None, symbol=None):
+        """Posterior for one measured cell, truncated to `[lo, hi]`.
+
+        `symbol`, when given, fixes the noise node's symbol name.  The
+        sampler collects nodes by symbol, so two cells built with the same
+        symbol -- and, necessarily, the same parameters -- are one random
+        variable to it: a dataset whose cells have stable identities can
+        keep repeated reads of one physical cell consistent this way,
+        without holding the built values anywhere.
+        """
         raise NotImplementedError
 
     def pair(self, obs_a, obs_b, variance, total, nonnegative):
@@ -91,7 +99,7 @@ class LatticeFamily(NoiseFamily):
         """The node's scale parameter for a noise law of this variance."""
         raise NotImplementedError
 
-    def cell(self, obs, variance, lo=None, hi=None):
+    def cell(self, obs, variance, lo=None, hi=None, symbol=None):
         obs = int(obs)
         scale = self.scale_from_variance(float(variance))
         if lo is not None and hi is not None and lo == hi:
@@ -102,6 +110,8 @@ class LatticeFamily(NoiseFamily):
         high = sp.oo if lo is None else sp.Integer(obs - int(lo))
         node = self.node_cls.create(
             loc=sp.Integer(0), scale=sp.Float(scale), low=low, high=high)
+        if symbol is not None:
+            node.expr = sp.Symbol(symbol)
         return NoisyInt(obs, DerivedNode(sp.Integer(obs) - node.expr, deps=(node,)))
 
     def _drop_inert(self, obs, scale, lo, hi):

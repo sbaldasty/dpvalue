@@ -3,9 +3,18 @@
 Since 2015 Wikimedia has published daily counts of pageviews per
 (country, project, page), protected by differential privacy and served as
 plain daily TSVs from analytics.wikimedia.org.  This module knows *what the
-numbers mean*: which noise mechanism produced each row, at what scale, and
-under which suppression threshold.  Fetching and reading the files sits on
-top of it.
+numbers mean* -- which noise mechanism produced each row, at what scale,
+and under which suppression threshold -- and reads the files in those
+terms: `fetch_pageviews` mirrors the days you name into a local root, and
+`get_pageviews` returns them as a tidy DataFrame whose `value` column holds
+the posterior of each true count.
+
+Unlike `census.py`, repeated reads agree: a cell's noise symbol is derived
+from its identity (day, country, project, page), so asking for the same
+cell twice yields the same random variable, and expressions combining the
+two sample consistently.  Cells never overlap across rows -- each
+(country, project, page, day) is measured exactly once, and there are no
+marginal queries -- so this is all the joint structure the release has.
 
 What a count measures: each device contributes at most its first 10 unique
 pageviews per day (the two historical eras, which predate the client-side
@@ -40,8 +49,17 @@ here.
 """
 
 import datetime as dt
+import hashlib
+import os
+import urllib.error
+import urllib.request
+
+import numpy as np
+import pandas as pd
+import polars as pl
 
 from .dataset import DiscreteGaussianFamily, DiscreteLaplaceFamily
+from .pandas_ext import NoisyIntArray
 
 BASE_URL = "https://analytics.wikimedia.org/published/datasets"
 DEFAULT_ROOT = "data/wikimedia-pageviews"
@@ -70,10 +88,10 @@ class Mechanism:
     def __repr__(self):
         return f"<Mechanism {self.source!r}: threshold {self.threshold}>"
 
-    def cell(self, obs):
+    def cell(self, obs, symbol=None):
         """The flat-prior posterior for a released count: nonnegative,
         centred at the observation."""
-        return self.family.cell(int(obs), self.variance, lo=0)
+        return self.family.cell(int(obs), self.variance, lo=0, symbol=symbol)
 
 
 # The pure epsilon-DP eras protect m daily pageviews per user at epsilon = 1,
@@ -254,3 +272,215 @@ def mechanism(day, country_code):
     if str(country_code).upper() == "US" and day <= US_GAP_END:
         return _LAPLACE_30
     return _GAUSSIAN[which]
+
+
+# ── access ───────────────────────────────────────────────────────────────────
+
+_SCHEMA = {
+    "country": pl.Utf8, "country_code": pl.Utf8, "project": pl.Utf8,
+    "page_id": pl.Int64, "page_title": pl.Utf8, "item_id": pl.Utf8,
+    "count": pl.Int64,
+}
+
+
+def resolve_days(days):
+    """Days given as dates, datetimes, ISO strings, or an iterable of them."""
+    if isinstance(days, (str, dt.date, dt.datetime)):
+        days = [days]
+    out = []
+    for day in days:
+        if isinstance(day, str):
+            day = dt.date.fromisoformat(day.strip())
+        elif isinstance(day, dt.datetime):
+            day = day.date()
+        elif not isinstance(day, dt.date):
+            raise TypeError(f"cannot read {day!r} as a day")
+        if day not in out:
+            out.append(day)
+    return out
+
+
+def days_between(start, end):
+    """Every released day from `start` through `end`, inclusive.
+
+    The five days the historical pipeline never released are omitted, so the
+    result can be handed straight to `fetch_pageviews`; ask for one of them
+    explicitly to be told why it cannot be served.
+    """
+    (start,), (end,) = resolve_days(start), resolve_days(end)
+    out = []
+    day = start
+    while day <= end:
+        if day not in MISSING_DAYS and release_for(day) is not None:
+            out.append(day)
+        day += dt.timedelta(days=1)
+    return out
+
+
+def _require_release(day):
+    release = release_for(day)
+    if release is None:
+        raise ValueError(f"no pageview release covers {day.isoformat()}")
+    if day in MISSING_DAYS:
+        raise ValueError(
+            f"{day.isoformat()} was never released: the pipeline failed and "
+            "the retention-limited source data was gone before it could be "
+            "re-run.  `days_between` skips these days.")
+    return release
+
+
+def _local_path(root, release, day):
+    return os.path.join(root, release.dataset, f"{day.isoformat()}.tsv")
+
+
+def fetch_pageviews(days, *, root=DEFAULT_ROOT, overwrite=False):
+    """Mirror the daily TSVs for `days` into `root`, for `get_pageviews`.
+
+    The releases are public but sizeable -- roughly 5-60 MB per day, with no
+    finer partitioning to prune -- so nothing is bundled and nothing is
+    fetched implicitly: name the days you want and they are mirrored,
+    preserving the releases' own directory layout.
+
+    Returns the list of local paths that now hold the requested days.
+    """
+    paths = []
+    for day in resolve_days(days):
+        release = _require_release(day)
+        dest = _local_path(root, release, day)
+        if os.path.exists(dest) and not overwrite:
+            paths.append(dest)
+            continue
+        paths.append(_download(release.url(day), dest, day))
+    return paths
+
+
+def _download(url, dest, day):
+    request = urllib.request.Request(
+        url, headers={"User-Agent":
+                      "noisyvalue (https://github.com/sbaldasty/noisyvalue)"})
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    partial = dest + ".part"
+    try:
+        with urllib.request.urlopen(request, timeout=60) as src, \
+                open(partial, "wb") as out:
+            while chunk := src.read(1 << 20):
+                out.write(chunk)
+        os.replace(partial, dest)
+    except urllib.error.HTTPError as error:
+        if os.path.exists(partial):
+            os.remove(partial)
+        if error.code == 404:
+            raise FileNotFoundError(
+                f"{url} does not exist; {day.isoformat()} has not been "
+                "published (the current day usually appears with a lag of a "
+                "day or two)") from error
+        raise
+    except BaseException:
+        if os.path.exists(partial):
+            os.remove(partial)
+        raise
+    return dest
+
+
+def _aslist(value):
+    if isinstance(value, (str, int, np.integer)):
+        return [value]
+    return list(value)
+
+
+def _filters(country, project, page, page_id, item):
+    conditions = []
+    if country is not None:
+        wanted = [str(c).strip().lower() for c in _aslist(country)]
+        conditions.append(
+            pl.col("country").str.to_lowercase().is_in(wanted)
+            | pl.col("country_code").str.to_lowercase().is_in(wanted))
+    if project is not None:
+        conditions.append(pl.col("project").is_in(
+            [str(p).strip().lower() for p in _aslist(project)]))
+    if page is not None:
+        conditions.append(pl.col("page_title").is_in(
+            [str(p).strip().replace(" ", "_") for p in _aslist(page)]))
+    if page_id is not None:
+        conditions.append(pl.col("page_id").is_in(
+            [int(p) for p in _aslist(page_id)]))
+    if item is not None:
+        conditions.append(pl.col("item_id").is_in(
+            [str(q).strip().upper() for q in _aslist(item)]))
+    return conditions
+
+
+def _symbol_name(day, country_code, project, page_id):
+    """A cell's noise symbol: stable across calls, unique across cells."""
+    key = f"{day.isoformat()}|{country_code}|{project}|{page_id}"
+    return "wmpv_" + hashlib.md5(key.encode()).hexdigest()[:16]
+
+
+def get_pageviews(days, *, country=None, project=None, page=None,
+                  page_id=None, item=None, root=DEFAULT_ROOT):
+    """Noisy pageview counts for the selected days, as a tidy DataFrame.
+
+    `country` matches the country name or its ISO code, case-insensitively;
+    `project` a project domain like "en.wikipedia"; `page` the page title
+    (spaces and underscores are interchangeable); `page_id` and `item` the
+    numeric page id and the Wikidata QID.  Each filter takes a scalar or a
+    list, and they combine conjunctively.  A filter matching nothing --
+    including a country the release excludes -- simply selects no rows.
+
+    Reads only what `fetch_pageviews` has mirrored into `root`.  One row per
+    released cell: the `value` column holds the flat-prior posterior of the
+    true (deduplicated, clipped) count, nonnegative and centred at the
+    released figure, built by the mechanism the `mechanism` column names;
+    `variance` is that mechanism's noise variance.  Rows whose noisy count
+    fell below the release threshold are absent from the files, so they are
+    absent here too -- an absence is a censored observation, not a zero.
+    """
+    conditions = _filters(country, project, page, page_id, item)
+    tables = []
+    for day in resolve_days(days):
+        release = _require_release(day)
+        path = _local_path(root, release, day)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"{path} is not mirrored; "
+                f"fetch_pageviews({day.isoformat()!r}) downloads it")
+        lf = pl.scan_csv(path, separator="\t", has_header=False,
+                         quote_char=None, schema=_SCHEMA)
+        for condition in conditions:
+            lf = lf.filter(condition)
+        tables.append((day, lf.collect()))
+
+    columns = {name: [] for name in
+               ("date", *COLUMNS[:-1], "mechanism", "variance")}
+    obs, roots = [], []
+    for day, table in tables:
+        mechs = {}
+        for row in table.iter_rows(named=True):
+            code = row["country_code"]
+            mech = mechs.get(code)
+            if mech is None:
+                mech = mechs[code] = mechanism(day, code)
+            value = mech.cell(
+                row["count"],
+                symbol=_symbol_name(day, code, row["project"], row["page_id"]))
+            columns["date"].append(day)
+            for name in COLUMNS[:-1]:
+                columns[name].append(row[name])
+            columns["mechanism"].append(mech.source)
+            columns["variance"].append(mech.variance)
+            obs.append(value._obs)
+            roots.append(value._root)
+
+    return pd.DataFrame({
+        "date": pd.to_datetime(columns["date"]),
+        "country": pd.array(columns["country"], dtype="string"),
+        "country_code": pd.array(columns["country_code"], dtype="string"),
+        "project": pd.array(columns["project"], dtype="string"),
+        "page_id": np.asarray(columns["page_id"], dtype="int64"),
+        "page_title": pd.array(columns["page_title"], dtype="string"),
+        "item_id": pd.array(columns["item_id"], dtype="string"),
+        "mechanism": pd.array(columns["mechanism"], dtype="string"),
+        "value": NoisyIntArray(np.asarray(obs, dtype="int64"),
+                               np.asarray(roots, dtype=object)),
+        "variance": np.asarray(columns["variance"], dtype="float64"),
+    })
