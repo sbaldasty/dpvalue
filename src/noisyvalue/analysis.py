@@ -24,10 +24,10 @@ class NoisyContingencyTable:
     def __init__(self, tbl):
         # Elements should be noisy floats if they aren't noisy numbers already
         tbl = np.vectorize(lambda x: NoisyFloat.lift(x, accept=NoisyNumber))(tbl)
-        # Must be 2D with positive dimensions
-        assert tbl.ndim == 2 and tbl.shape[0] > 0 and tbl.shape[1] > 0
-        # All observations must be finite
-        assert isfinite(asarray([float(value) for value in tbl.ravel()], dtype=float)).all()
+        if not (tbl.ndim == 2 and tbl.shape[0] > 0 and tbl.shape[1] > 0):
+            raise ValueError("Expected a non-empty 2D table")
+        if not isfinite(asarray([float(value) for value in tbl.ravel()], dtype=float)).all():
+            raise ValueError("Expected all table observations to be finite")
         self.tbl = tbl
 
     @classmethod
@@ -85,7 +85,8 @@ class NoisyContingencyTable:
 
     def odds_ratio(self):
         tbl = self.tbl
-        assert tbl.shape == (2, 2)
+        if tbl.shape != (2, 2):
+            raise ValueError("odds_ratio requires a 2x2 table")
 
         grp0_yes, grp0_no, grp1_yes, grp1_no = tbl.ravel()
         stat = (grp0_yes * grp1_no) / (grp0_no * grp1_yes)

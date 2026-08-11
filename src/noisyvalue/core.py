@@ -145,7 +145,7 @@ def sample_noisy_values(*vals, n=1000, rng=None):
 
 class NoisyValue:
     def __init__(self, obs, root):
-        assert isinstance(root, Node)
+        util.require_instance(Node, root)
         self._obs = obs
         self._root = root
 
@@ -220,7 +220,8 @@ class NoisyValue:
     @classmethod
     def lift(cls, value, accept=None):
         accept = cls if accept is None else accept
-        assert issubclass(accept, NoisyValue)
+        if not isinstance(accept, type) or not issubclass(accept, NoisyValue):
+            raise TypeError(f"Expected accept to be subclass of NoisyValue, got {accept!r}")
         return value if isinstance(value, accept) else cls(value, DerivedNode(value))
 
 
@@ -505,7 +506,8 @@ class NoisyValueSampler:
 class SampleBatch:
     def __init__(self, draws):
         draws = np.asarray(draws)
-        assert draws.ndim == 1
+        if draws.ndim != 1:
+            raise ValueError(f"Expected 1D draws array, got shape {draws.shape}")
         self.draws = draws
 
     def credible_interval(self, p=0.95):

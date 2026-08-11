@@ -51,17 +51,17 @@ def test_as_contingency_table_returns_noisy_contingency_table():
 
 
 def test_odds_ratio_enforces_2x2_shape():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         NoisyContingencyTable([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]).odds_ratio()
 
 
 def test_noisy_contingency_table_odds_ratio_enforces_2x2_shape():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         NoisyContingencyTable([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]).odds_ratio()
 
 
 def test_chi_squared_enforces_2d_shape():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         NoisyContingencyTable([1.0, 2.0, 3.0]).chi_squared()
 
 
