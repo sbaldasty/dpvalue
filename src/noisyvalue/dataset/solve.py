@@ -33,6 +33,7 @@ import sympy as sp
 from ..core import NoisyInt
 from ..graph import DerivedNode
 from ..graph import DiscreteGaussianNode, DiscreteLaplaceNode
+from ..graph import GaussianCensoredNode, LaplaceCensoredNode
 from .evidence import BoundedHistogram, ExactHistogram, ZeroRegion
 
 
@@ -82,6 +83,7 @@ class LatticeFamily(NoiseFamily):
     """
 
     node_cls = None
+    censored_cls = None
 
     # A bound this far outside the posterior's centre is not merely unlikely
     # to bind, it is *provably* inert: the node's `_draw` only ever puts
@@ -128,12 +130,33 @@ class LatticeFamily(NoiseFamily):
             hi = None
         return lo, hi
 
+    def suppressed(self, threshold, variance, lo=0, hi=None, symbol=None):
+        """Flat-prior posterior for a cell whose noisy count stayed *below*
+        `threshold` -- the information carried by a row's absence from a
+        release that publishes only noisy counts at or above it.
+
+        The pmf is proportional to F_noise(threshold - 1 - t) on `[lo, hi]`:
+        essentially uniform below the threshold with the noise's upper tail
+        as a shoulder.  There is no released number, so the observation is
+        fabricated as the posterior median (roughly threshold/2); compose it
+        with care.
+        """
+        scale = self.scale_from_variance(float(variance))
+        node = self.censored_cls.create(
+            cutoff=sp.Integer(int(threshold) - 1), scale=sp.Float(scale),
+            low=sp.Integer(int(lo)),
+            high=sp.oo if hi is None else sp.Integer(int(hi)))
+        if symbol is not None:
+            node.expr = sp.Symbol(symbol)
+        return NoisyInt(int(node.quantile(0.5)), node)
+
 
 class DiscreteGaussianFamily(LatticeFamily):
     """The 2020 DAS mechanism: each query noised independently, discrete Gaussian."""
 
     name = "discrete gaussian"
     node_cls = DiscreteGaussianNode
+    censored_cls = GaussianCensoredNode
     # the node's grid spans 6 sd either side, so 8 is safely beyond it
     INERT_SCALES = 8.0
 
@@ -177,6 +200,7 @@ class DiscreteLaplaceFamily(LatticeFamily):
 
     name = "discrete laplace"
     node_cls = DiscreteLaplaceNode
+    censored_cls = LaplaceCensoredNode
     # the node's grid spans 30 scales either side, so 32 is safely beyond it
     INERT_SCALES = 32.0
 

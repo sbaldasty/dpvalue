@@ -15,6 +15,7 @@ from . import util
 from .analysis import NoisyContingencyTable
 from .core import NoisyFloat, NoisyInt, NoisyBool, consolidate
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, DiscreteLaplaceNode, LatentNode, NormalNode
+from .graph import GaussianCensoredNode, LaplaceCensoredNode
 from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 
@@ -319,6 +320,16 @@ class DiscreteGaussianNodeSerializer(NoiseNodeSerializer):
 class DiscreteLaplaceNodeSerializer(NoiseNodeSerializer):
     tag = "discrete_laplace"
     matches_type = DiscreteLaplaceNode
+
+
+class GaussianCensoredNodeSerializer(NoiseNodeSerializer):
+    tag = "gaussian_censored"
+    matches_type = GaussianCensoredNode
+
+
+class LaplaceCensoredNodeSerializer(NoiseNodeSerializer):
+    tag = "laplace_censored"
+    matches_type = LaplaceCensoredNode
 
 
 # ----------------------------------------------------------------------------

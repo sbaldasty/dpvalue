@@ -189,11 +189,13 @@ def test_get_pageviews_returns_a_tidy_frame(root):
 
     assert list(frame.columns) == [
         "date", "country", "country_code", "project", "page_id",
-        "page_title", "item_id", "mechanism", "value", "variance"]
+        "page_title", "item_id", "mechanism", "value", "variance",
+        "censored"]
     assert len(frame) == 4
     assert isinstance(frame["value"].array, NoisyIntArray)
     assert list(frame["value"].array._obs) == [205, 149, 780, 1420]
     assert set(frame["date"].dt.date) == {d("2024-03-01")}
+    assert not frame["censored"].any()
 
 
 def test_variance_follows_the_tier_and_the_era(root):
@@ -274,6 +276,57 @@ def test_different_cells_are_independent_random_variables(root):
         frame["value"][0], frame["value"][1], n=200, rng=5)
 
     assert not np.array_equal(batch_a.draws, batch_b.draws)
+
+
+def test_missing_cells_can_be_read_as_censored_posteriors(root):
+    frame = wm.get_pageviews("2024-03-01", country=["BD", "IS"],
+                             project="bn.wikipedia", page="ঢাকা",
+                             missing="censored", root=root)
+    frame = frame.set_index("country_code")
+
+    # Bangladesh released the row; Iceland's absence becomes a posterior
+    assert not frame.loc["BD", "censored"]
+    assert frame.loc["IS", "censored"]
+    value = frame.loc["IS", "value"]
+    draws = value.sample(2000, rng=5).draws
+    assert draws.min() >= 0
+    assert draws.max() <= 89 + 110               # threshold plus the shoulder grid
+    assert draws.mean() == pytest.approx(45, abs=10)
+    assert abs(value._obs - np.median(draws)) <= 5   # fabricated obs ~ median
+
+
+def test_censored_reads_are_one_random_variable(root):
+    kwargs = dict(country=["IS"], project="bn.wikipedia", page="ঢাকা",
+                  missing="censored", root=root)
+    a = wm.get_pageviews("2024-03-01", **kwargs)["value"][0]
+    b = wm.get_pageviews("2024-03-01", **kwargs)["value"][0]
+    batch_a, batch_b = sample_noisy_values(a, b, n=200, rng=6)
+    assert np.array_equal(batch_a.draws, batch_b.draws)
+
+
+def test_censored_mode_validates_its_request(root):
+    with pytest.raises(ValueError, match="explicit countries"):
+        wm.get_pageviews("2024-03-01", page="X", missing="censored", root=root)
+    with pytest.raises(ValueError, match="exactly one"):
+        wm.get_pageviews("2024-03-01", country=["IS"],
+                         project="is.wikipedia", missing="censored", root=root)
+    with pytest.raises(ValueError, match="ISO alpha-2"):
+        wm.get_pageviews("2024-03-01", country=["Iceland"],
+                         project="is.wikipedia", page="X",
+                         missing="censored", root=root)
+    with pytest.raises(ValueError, match="not published"):
+        wm.get_pageviews("2024-03-01", country=["MO"],
+                         project="zh.wikipedia", page="X",
+                         missing="censored", root=root)
+
+
+def test_censored_mode_refuses_pre_tiers_excluded_countries(root):
+    # Russia's absence in 2018 reflects the protection policy of the time,
+    # not thresholding, so no censored posterior exists
+    with pytest.raises(ValueError, match="protection policy"):
+        wm.get_pageviews("2018-06-01", country=["RU"],
+                         project="ru.wikipedia", page="X",
+                         missing="censored", root=root)
 
 
 def test_days_beyond_the_codebook_validation_are_warned_about(root):

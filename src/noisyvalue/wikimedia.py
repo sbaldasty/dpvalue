@@ -61,6 +61,7 @@ here.
 
 import datetime as dt
 import hashlib
+import itertools
 import os
 import urllib.error
 import urllib.request
@@ -106,6 +107,15 @@ class Mechanism:
         """The flat-prior posterior for a released count: nonnegative,
         centred at the observation."""
         return self.family.cell(int(obs), self.variance, lo=0, symbol=symbol)
+
+    def suppressed(self, symbol=None):
+        """The flat-prior posterior for a cell *absent* from its day's file:
+        its noisy count stayed below the release threshold, so the true
+        count is essentially uniform below it with the noise's upper tail
+        as a shoulder.  The observation is fabricated as the posterior
+        median; `get_pageviews` flags such rows in its `censored` column."""
+        return self.family.suppressed(self.threshold, self.variance,
+                                      symbol=symbol)
 
 
 # The pure epsilon-DP eras protect m daily pageviews per user at epsilon = 1,
@@ -268,6 +278,20 @@ _TIER_VERSIONS = (
 # released file (checked across 2024-2026); the pipeline evidently excludes
 # it outright.
 NEVER_PUBLISHED = frozenset({"TR"})
+
+# Countries with no row in any pre-2024 file checked, so their absence there
+# reflects the protection policy of the time rather than thresholding, and
+# no censored posterior exists for them before TIERS_START.  Empirical and
+# deliberately conservative: a small country that merely never cleared its
+# threshold may be swept in (costing a valid but nearly vacuous interval),
+# but a policy-excluded country left out would yield a wrong posterior.
+# Notably includes Thailand, which is lower-risk on every known list yet
+# first appears on exactly 2024-02-15.
+_PRE_TIERS_EXCLUDED = frozenset({
+    "AE", "AF", "AZ", "BD", "BH", "BY", "CN", "CU", "DJ", "EG", "ER", "ET",
+    "HN", "IQ", "IR", "KP", "KW", "KZ", "LA", "MM", "NI", "OM", "PK", "RU",
+    "SA", "SD", "SY", "TH", "TM", "TR", "UZ", "VA", "VE", "VN", "YE",
+})
 
 # How far the vendored constants -- tier versions, patch routing, missing
 # days -- have been validated against the releases.  Days beyond it are
@@ -472,8 +496,55 @@ def _symbol_name(day, country_code, project, page_id):
     return "wmpv_" + hashlib.md5(key.encode()).hexdigest()[:16]
 
 
+class _CensoredRequest:
+    """The explicit cell grid censored mode fills: every (country, project,
+    page) combination a day's file lacks becomes a censored row."""
+
+    def __init__(self, codes, projects, pages, by_title):
+        self.codes = codes
+        self.projects = projects
+        self.pages = pages
+        self.by_title = by_title
+
+    def combos(self):
+        return itertools.product(self.codes, self.projects, self.pages)
+
+
+def _censored_request(country, project, page, page_id, item):
+    if item is not None:
+        raise ValueError('missing="censored" cannot anchor cells by item: '
+                         "an absent row's Wikidata id is unknowable")
+    if country is None or project is None:
+        raise ValueError('missing="censored" needs explicit countries and '
+                         "projects: absence is only meaningful for cells "
+                         "you name")
+    if (page is None) == (page_id is None):
+        raise ValueError('missing="censored" needs exactly one of '
+                         "page / page_id to identify the cells")
+    codes = [str(c).strip().upper() for c in _aslist(country)]
+    bad = [c for c in codes if len(c) != 2 or not c.isalpha()]
+    if bad:
+        raise ValueError("censored cells need ISO alpha-2 country codes "
+                         f"(a name cannot be resolved for an absent row); "
+                         f"got {bad}")
+    projects = [str(p).strip().lower() for p in _aslist(project)]
+    if page is not None:
+        pages = [str(p).strip().replace(" ", "_") for p in _aslist(page)]
+        return _CensoredRequest(codes, projects, pages, True)
+    return _CensoredRequest(codes, projects,
+                            [int(p) for p in _aslist(page_id)], False)
+
+
+def _check_censorable(day, code):
+    if day < TIERS_START and code in _PRE_TIERS_EXCLUDED:
+        raise ValueError(
+            f"{code!r} has no rows before {TIERS_START.isoformat()} because "
+            "the protection policy of the time excluded it, not because of "
+            "thresholding; absence there carries no censored posterior")
+
+
 def get_pageviews(days, *, country=None, project=None, page=None,
-                  page_id=None, item=None, root=DEFAULT_ROOT):
+                  page_id=None, item=None, missing="drop", root=DEFAULT_ROOT):
     """Noisy pageview counts for the selected days, as a tidy DataFrame.
 
     `country` matches the country name or its ISO code, case-insensitively;
@@ -488,9 +559,28 @@ def get_pageviews(days, *, country=None, project=None, page=None,
     true (deduplicated, clipped) count, nonnegative and centred at the
     released figure, built by the mechanism the `mechanism` column names;
     `variance` is that mechanism's noise variance.  Rows whose noisy count
-    fell below the release threshold are absent from the files, so they are
-    absent here too -- an absence is a censored observation, not a zero.
+    fell below the release threshold are absent from the files, so by
+    default they are absent here too -- an absence is a censored
+    observation, not a zero.
+
+    `missing="censored"` turns that absence into rows.  The request must
+    then name explicit `country` ISO codes, `project` values, and exactly
+    one of `page` / `page_id` (titles for the pre-2017 era, which has no
+    ids); every combination absent from a day's file comes back as a row
+    flagged True in the `censored` column, whose posterior encodes what
+    absence proves: the noisy count stayed below the release threshold, so
+    the true count is essentially uniform below it with the noise's upper
+    tail as a shoulder.  Its observation is the posterior median, since
+    nothing was released.  This reading is valid only where the cell could
+    have been released: countries the protection policy excluded raise
+    instead of yielding a posterior, and whether the page cleared the
+    150-global-pageview ingestion threshold that day is the caller's to
+    check against the public pageview API.
     """
+    if missing not in ("drop", "censored"):
+        raise ValueError('missing must be "drop" or "censored"')
+    request = (_censored_request(country, project, page, page_id, item)
+               if missing == "censored" else None)
     conditions = _filters(country, project, page, page_id, item)
     tables = []
     for day in resolve_days(days):
@@ -509,12 +599,26 @@ def get_pageviews(days, *, country=None, project=None, page=None,
         tables.append((day, lf.collect()))
 
     columns = {name: [] for name in
-               ("date", *COLUMNS[:-1], "mechanism", "variance")}
+               ("date", *COLUMNS[:-1], "mechanism", "variance", "censored")}
     obs, roots = [], []
+
+    def emit(day, mech, value, censored, fields):
+        columns["date"].append(day)
+        for name in COLUMNS[:-1]:
+            columns[name].append(fields.get(name))
+        columns["mechanism"].append(mech.source)
+        columns["variance"].append(mech.variance)
+        columns["censored"].append(censored)
+        obs.append(value._obs)
+        roots.append(value._root)
+
+    names = {}
     for day, table in tables:
         mechs = {}
+        present = set()
         for row in table.iter_rows(named=True):
             code = row["country_code"]
+            names.setdefault(code, row["country"])
             mech = mechs.get(code)
             if mech is None:
                 mech = mechs[code] = mechanism(day, code)
@@ -524,13 +628,23 @@ def get_pageviews(days, *, country=None, project=None, page=None,
             value = mech.cell(
                 row["count"],
                 symbol=_symbol_name(day, code, row["project"], page_key))
-            columns["date"].append(day)
-            for name in COLUMNS[:-1]:
-                columns[name].append(row.get(name))
-            columns["mechanism"].append(mech.source)
-            columns["variance"].append(mech.variance)
-            obs.append(value._obs)
-            roots.append(value._root)
+            if request is not None:
+                present.add((code, row["project"],
+                             row["page_title"] if request.by_title
+                             else row["page_id"]))
+            emit(day, mech, value, False, row)
+        if request is None:
+            continue
+        for code, proj, pg in request.combos():
+            if (code, proj, pg) in present:
+                continue
+            _check_censorable(day, code)
+            mech = mechanism(day, code)
+            value = mech.suppressed(symbol=_symbol_name(day, code, proj, pg))
+            fields = {"country": names.get(code), "country_code": code,
+                      "project": proj,
+                      ("page_title" if request.by_title else "page_id"): pg}
+            emit(day, mech, value, True, fields)
 
     return pd.DataFrame({
         "date": pd.to_datetime(columns["date"]),
@@ -544,4 +658,5 @@ def get_pageviews(days, *, country=None, project=None, page=None,
         "value": NoisyIntArray(np.asarray(obs, dtype="int64"),
                                np.asarray(roots, dtype=object)),
         "variance": np.asarray(columns["variance"], dtype="float64"),
+        "censored": np.asarray(columns["censored"], dtype=bool),
     })

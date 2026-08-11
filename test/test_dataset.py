@@ -28,6 +28,7 @@ from noisyvalue.dataset import (
     marginal_coarsening,
     solve,
 )
+from noisyvalue.core import sample_noisy_values
 from noisyvalue.dataset.solve import build_values
 from noisyvalue.graph import DiscreteGaussianNode, NoiseNode
 from sympy import oo
@@ -445,6 +446,42 @@ def test_laplace_dropping_an_inert_bound_leaves_the_posterior_unchanged():
 def test_laplace_family_has_no_pair_closed_form():
     family = DiscreteLaplaceFamily()
     assert family.pair(10, 20, 1800.0, 25, True) is None
+
+
+# ── suppressed cells ─────────────────────────────────────────────────────────
+
+def test_suppressed_cell_is_roughly_uniform_below_the_threshold():
+    family = DiscreteLaplaceFamily()
+    cell = family.suppressed(450, family.variance_from_scale(30.0))
+    draws = cell.sample(8000, rng=1).draws
+
+    assert draws.min() >= 0
+    assert draws.mean() == pytest.approx(450 / 2, abs=20)
+    assert draws.std() == pytest.approx(450 / np.sqrt(12), rel=0.15)
+    assert (draws >= 450).mean() < 0.12          # the shoulder is a fringe
+
+
+def test_suppressed_cell_obs_is_the_posterior_median():
+    family = DiscreteGaussianFamily()
+    cell = family.suppressed(90, 332.2)
+
+    assert 35 <= cell._obs <= 55                 # ~ threshold / 2
+    draws = cell.sample(4000, rng=2).draws
+    assert np.median(draws) == pytest.approx(cell._obs, abs=6)
+
+
+def test_suppressed_cell_respects_an_upper_bound():
+    family = DiscreteGaussianFamily()
+    draws = family.suppressed(550, 8109.0, hi=500).sample(2000, rng=3).draws
+    assert draws.max() <= 500
+
+
+def test_suppressed_cells_share_symbols_when_asked():
+    family = DiscreteLaplaceFamily()
+    a = family.suppressed(450, 1800.0, symbol="s_cell")
+    b = family.suppressed(450, 1800.0, symbol="s_cell")
+    batch_a, batch_b = sample_noisy_values(a, b, n=100, rng=4)
+    assert np.array_equal(batch_a.draws, batch_b.draws)
 
 
 def test_a_measurement_with_no_released_query_must_be_fully_pinned():

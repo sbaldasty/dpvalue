@@ -282,3 +282,18 @@ def test_table_kind_spot_check(tmp_path):
     assert doc["container"]["tag"] == "dataframe"
     assert doc["container"]["columns"]["label"]["tag"] == "plain_series"
     assert doc["container"]["columns"]["value"]["tag"] == "float_series"
+
+
+# ── censored (suppressed) cells ───────────────────────────────────────────────
+
+def test_censored_cell_survives_roundtrip(tmp_path):
+    from noisyvalue.dataset import DiscreteLaplaceFamily
+
+    family = DiscreteLaplaceFamily()
+    v = family.suppressed(450, family.variance_from_scale(30.0))
+    rt = _roundtrip(tmp_path, v)
+    assert isinstance(rt, NoisyInt)
+    assert int(rt) == int(v)
+    orig_ci = v.credible_interval(rng=0)
+    rt_ci = rt.credible_interval(rng=0)
+    assert orig_ci == pytest.approx(rt_ci, abs=2.0)

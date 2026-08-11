@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.stats
 import sympy as sp
 
 from . import util
@@ -311,6 +312,124 @@ class DiscreteLaplaceNode(LocationScaleLatticeNode):
         scale = float(self.scale)
         u = np.asarray(u, dtype=float)
         return loc - scale * np.sign(u - 0.5) * np.log1p(-2.0 * np.abs(u - 0.5))
+
+
+class CensoredLatticeNode(NoiseNode):
+    """A count observed only through the fact that its noisy measurement
+    stayed at or below `cutoff`.
+
+    Under a flat prior the posterior is pmf(k) proportional to
+    F_noise(cutoff - k) on `[low, high]`: essentially uniform below the
+    cutoff, rolling off through the noise's upper tail around it.  This is
+    the posterior of a *suppressed* cell in a thresholded release, where a
+    row's absence says its noisy count fell short.  `low` must be finite --
+    the pmf tends to a constant as k -> -oo, so the flat prior is proper
+    only on a bounded-below support.  Subclasses name the noise law whose
+    CDF shapes the shoulder.
+    """
+
+    noise_cls = None
+    cutoff = Parameter(0)
+    scale = Parameter(1)
+    low = Parameter(2)
+    high = Parameter(3)
+
+    @classmethod
+    def noise_log_cdf(cls, x, scale):
+        """log P(noise <= x), vectorized over x."""
+        raise NotImplementedError
+
+    def _resolved(self, resolved):
+        cutoff = float(self.cutoff.subs(resolved))
+        scale = float(self.scale.subs(resolved))
+        low = LocationScaleLatticeNode.resolve_bound(self.low, resolved)
+        high = LocationScaleLatticeNode.resolve_bound(self.high, resolved)
+        return cutoff, scale, low, high
+
+    @classmethod
+    def _pmf(cls, cutoff, scale, low, high):
+        # beyond the noise node's own grid width the shoulder carries no
+        # sampled mass, so the support can stop there
+        hi = int(np.floor(cutoff)) + cls.noise_cls.grid_width(scale)
+        if np.isfinite(high):
+            hi = min(hi, int(np.floor(high)))
+        k = np.arange(int(np.ceil(low)), hi + 1)
+        log_pmf = cls.noise_log_cdf(cutoff - k, scale)
+        log_pmf = log_pmf - log_pmf.max()
+        pmf = np.exp(log_pmf)
+        return k, pmf / pmf.sum()
+
+    @classmethod
+    def _valid(cls, cutoff, scale, low, high):
+        return (np.isfinite(cutoff) and np.isfinite(scale) and scale > 0
+                and np.isfinite(low) and low <= high)
+
+    def sample(self, rng, size=None, resolved=()):
+        cutoff, scale, low, high = self._resolved(resolved)
+        if not self._valid(cutoff, scale, low, high):
+            return np.nan if size is None else np.full(size, np.nan, dtype=float)
+        return self._draw(rng, cutoff, scale, low, high, size)
+
+    @classmethod
+    def _draw(cls, rng, cutoff, scale, low, high, size=None):
+        k, pmf = cls._pmf(cutoff, scale, low, high)
+        return rng.choice(k, size=size, p=pmf)
+
+    @classmethod
+    def sample_arrays(cls, rng, cutoff, scale, low, high):
+        cutoff = np.asarray(cutoff, dtype=float)
+        scale = np.asarray(scale, dtype=float)
+        low = np.asarray(low, dtype=float)
+        high = np.asarray(high, dtype=float)
+        n = cutoff.shape[0]
+        result = np.empty(n, dtype=float)
+        for i in range(n):
+            if not cls._valid(cutoff[i], scale[i], low[i], high[i]):
+                result[i] = np.nan
+            else:
+                result[i] = float(cls._draw(rng, cutoff[i], scale[i],
+                                            low[i], high[i]))
+        return result
+
+    def quantile(self, u, resolved=()):
+        cutoff, scale, low, high = self._resolved(resolved)
+        if not self._valid(cutoff, scale, low, high):
+            raise ValueError(
+                "quantiles of a censored count need a finite lower bound "
+                "and positive scale")
+        k, pmf = self._pmf(cutoff, scale, low, high)
+        cdf = np.cumsum(pmf)
+        u = np.clip(np.asarray(u, dtype=float), 0.0, 1.0)
+        idx = np.minimum(np.searchsorted(cdf, u), len(k) - 1)
+        values = k[idx].astype(float)
+        return values if values.ndim else float(values)
+
+
+class GaussianCensoredNode(CensoredLatticeNode):
+    noise_cls = DiscreteGaussianNode
+
+    @classmethod
+    def noise_log_cdf(cls, x, scale):
+        # continuous-Gaussian approximation with continuity correction;
+        # exact to ~1e-3 at the scales any release uses
+        return scipy.stats.norm.logcdf((np.asarray(x, dtype=float) + 0.5) / scale)
+
+
+class LaplaceCensoredNode(CensoredLatticeNode):
+    noise_cls = DiscreteLaplaceNode
+
+    @classmethod
+    def noise_log_cdf(cls, x, scale):
+        # exact two-sided geometric CDF with p = exp(-1/scale):
+        # F(x) = p^(-x) / (1+p) for x < 0, and 1 - p^(x+1) / (1+p) above
+        x = np.asarray(x, dtype=float)
+        p = np.exp(-1.0 / scale)
+        below = x / scale - np.log1p(p)
+        # the branch is evaluated everywhere before `where` selects, so clamp
+        # its argument into the region where it is defined
+        above = np.log1p(-np.exp(-(np.maximum(x, 0.0) + 1.0) / scale)
+                         / (1.0 + p))
+        return np.where(x < 0, below, above)
 
 
 def topological_sort_law_nodes(law_nodes):

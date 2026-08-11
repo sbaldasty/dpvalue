@@ -94,3 +94,16 @@ def test_plot_posterior_supports_discrete_laplace_cells():
     curve = result["curves"][0]
     peak = curve["x"][np.argmax(curve["density"])]
     assert abs(peak - 1000) < 30
+
+
+def test_plot_posterior_supports_suppressed_cells():
+    # censored nodes have no sympy RV at all; the density comes entirely
+    # through their own quantile hook, and should span [0, threshold]
+    from noisyvalue.dataset import DiscreteGaussianFamily
+
+    cell = DiscreteGaussianFamily().suppressed(90, 332.2)
+    result = plot_posterior(cell, quadrature_points=15, grid_size=150)
+
+    curve = result["curves"][0]
+    assert curve["x"].min() > -100
+    assert curve["x"].max() < 300

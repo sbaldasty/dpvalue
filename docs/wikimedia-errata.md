@@ -26,6 +26,7 @@ way.
 | 7 | Türkiye is "Higher risk" on every protection-list revision, which per the release rules means publication at ρ=1.546e-4 with threshold 1000 | no Turkish row exists in any file, in any era, through 2026 |
 | 8 | counts are "pageviews" | historical-era counts include automated traffic: per-page country sums track the public API's *all-agents* totals, not its user totals |
 | 9 | the Gaussian noise scale is not stated (only ρ per tier) | σ² = 10/(2ρ) — derived, then confirmed by reproducing all three README 95 % intervals |
+| 10 | Thailand is "Lower risk" on every known list revision | absent from every pre-2024 file, appearing for the first time on exactly 2024-02-15 — the old protection list evidently excluded it |
 
 Details and consequences follow, roughly in order of how much each matters for
 posterior modeling.
@@ -81,10 +82,16 @@ the effective date of each revision in the data was pinned by probing files on
 either side (tiering begins exactly 2024-02-15; Hong Kong is dropped
 2024-05-19; the 2026 recalibration — 22 countries reshuffled — takes effect
 2026-01-26, the TSV commit date, not the foundation wiki's "last updated 30
-March 2026" stamp). A note: the *pre-2024* list differed materially — Macao,
-Hong Kong, Palestine, and Tajikistan were published at the ordinary threshold
-through 2024-02-14 even though the 2024 list bans or restricts them — so
-today's list must not be applied retroactively.
+March 2026" stamp). A note: the *pre-2024* list differed materially in both
+directions — Macao, Hong Kong, Palestine, and Tajikistan were published at
+the ordinary threshold through 2024-02-14 even though the 2024 list bans or
+restricts them, while Thailand (lower-risk on every list we can see) has no
+row in any pre-2024 file and first appears on exactly 2024-02-15 — so today's
+list must not be applied retroactively in either direction.
+`_PRE_TIERS_EXCLUDED` in `wikimedia.py` vendors the empirically-absent set
+(35 countries, deliberately conservative); it exists so that censored-cell
+posteriors (`missing="censored"`), whose meaning is "the noisy count fell
+below the threshold", are refused where absence actually meant policy.
 
 ## Small mechanical departures (1–4, 6, 9)
 
