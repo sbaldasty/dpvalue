@@ -34,6 +34,15 @@ test_that("comparing noisy columns for filtering gives a plain logical mask, not
   expect_equal(mask, c(FALSE, TRUE, TRUE))
 })
 
+test_that("comparing length-1 noisy columns preserves NoisyBool", {
+  a <- .mk_float_column(c(1, 2, 3))[2]
+  b <- .mk_float_column(c(10, 20, 30))[2]
+  cmp <- a < b
+  expect_s3_class(cmp, "noisy_vec")
+  expect_false(is.logical(cmp))
+  expect_equal(.dtype(cmp), "noisybool")
+})
+
 test_that("mean() of a noisy column is a length-1 noisy scalar", {
   a <- .mk_float_column(c(1, 2, 3))
   m <- mean(a)

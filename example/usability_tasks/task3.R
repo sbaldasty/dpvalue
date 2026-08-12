@@ -35,7 +35,7 @@ population <- get_decennial(
   state = "VT")
 
 chittenden_county <- population[population$GEOID == "50007", ]
-male <- chittenden_county$value[[which(chittenden_county$variable == "male")]]
-female <- chittenden_county$value[[which(chittenden_county$variable == "female")]]
+male <- chittenden_county$value[chittenden_county$variable == "male"]
+female <- chittenden_county$value[chittenden_county$variable == "female"]
 
 cat("P(male > female):", round(noisy_prob(male > female), 4), "\n")

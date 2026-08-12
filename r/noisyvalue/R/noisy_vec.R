@@ -168,6 +168,8 @@ c.noisy_vec <- function(...) {
 .OPS_SUPPORTED <- c("+", "-", "*", "/", "^", "%%", "%/%",
                      "==", "!=", "<", "<=", ">", ">=", "&", "|")
 
+.OPS_NOISY_BOOL <- c("==", "!=", "<", "<=", ">", ">=", "&", "|")
+
 #' Arithmetic and comparison on noisy_vec objects
 #'
 #' Forwards straight through to the wrapped Python object's own operator
@@ -183,6 +185,17 @@ Ops.noisy_vec <- function(e1, e2) {
 
   py1 <- if (inherits(e1, "noisy_vec")) .py(e1) else e1
   py2 <- if (missing(e2)) NULL else if (inherits(e2, "noisy_vec")) .py(e2) else e2
+
+  # Preserve posterior semantics for comparisons on length-1 noisy columns.
+  # For pandas Series, `>`/`<`/etc. normally return observed boolean masks;
+  # when both sides are one row, unbox to noisy scalars so callers can pass
+  # results to noisy_prob() without having to manually use [[ ]].
+  if (!is.null(py2) && op %in% .OPS_NOISY_BOOL &&
+      inherits(py1, "pandas.Series") && inherits(py2, "pandas.Series") &&
+      length(e1) == 1L && length(e2) == 1L) {
+    py1 <- py1$iloc[0L]
+    py2 <- py2$iloc[0L]
+  }
 
   # Two pandas Series align by index *label*, not position -- two noisy_vec
   # values sliced from different tibbles/filters can carry unrelated index

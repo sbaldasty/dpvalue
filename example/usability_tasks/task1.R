@@ -32,5 +32,10 @@ chittenden_county <- population[population$GEOID == "50007", ]
 male <- chittenden_county$value[chittenden_county$variable == "male"]
 female <- chittenden_county$value[chittenden_county$variable == "female"]
 
+male_interval <- noisy_credible_interval(male, n = 20000, rng = 100)
+female_interval <- noisy_credible_interval(female, n = 20000, rng = 100)
+
 cat("Male residents in Chittenden County, Vermont:", format(male), "\n")
+cat("Male residents credible interval:", format(male_interval), "\n")
 cat("Female residents in Chittenden County, Vermont:", format(female), "\n")
+cat("Female residents credible interval:", format(female_interval), "\n")

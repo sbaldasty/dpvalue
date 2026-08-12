@@ -23,14 +23,18 @@ population <- get_decennial(
   sumfile = "dhc",
   state = "VT")
 
-# `[[` (not `[`) is what actually unboxes to a genuine scalar noisy value
-# here -- see tasks.md's note on task 3 for why that distinction matters.
 chittenden_county <- population[population$GEOID == "50007", ]
 orange_county <- population[population$GEOID == "50017", ]
-c_male <- chittenden_county$value[[which(chittenden_county$variable == "male")]]
-c_female <- chittenden_county$value[[which(chittenden_county$variable == "female")]]
-o_male <- orange_county$value[[which(orange_county$variable == "male")]]
-o_female <- orange_county$value[[which(orange_county$variable == "female")]]
+c_male <- chittenden_county$value[chittenden_county$variable == "male"]
+c_female <- chittenden_county$value[chittenden_county$variable == "female"]
+o_male <- orange_county$value[orange_county$variable == "male"]
+o_female <- orange_county$value[orange_county$variable == "female"]
+male <- c_male + o_male
+male_interval <- noisy_credible_interval(male)
+female <- c_female + o_female
+female_interval <- noisy_credible_interval(female)
 
-cat("Total male residents:", format(c_male + o_male), "\n")
-cat("Total female residents:", format(c_female + o_female), "\n")
+cat("Total male residents:", format(male), "\n")
+cat("Male residents credible interval:", format(male_interval), "\n")
+cat("Total female residents:", format(female), "\n")
+cat("Female residents credible interval:", format(female_interval), "\n")
