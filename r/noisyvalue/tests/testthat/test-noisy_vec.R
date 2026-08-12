@@ -3,7 +3,7 @@ skip_if_not(getOption("noisyvalue.test_env_ready", FALSE), "noisyvalue Python ve
 .mk_float_column <- function(obs) {
   core <- reticulate::import("noisyvalue.core", convert = FALSE)
   pd <- reticulate::import("pandas", convert = FALSE)
-  pdext <- reticulate::import("noisyvalue.pandas_ext", convert = FALSE)
+  pdext <- reticulate::import("noisyvalue.pandas", convert = FALSE)
   builtins <- reticulate::import_builtins(convert = FALSE)
   vals <- lapply(seq_along(obs), function(i) {
     core$NoisyFloat$normal(0, 1, obs = obs[i], rng = as.integer(i))

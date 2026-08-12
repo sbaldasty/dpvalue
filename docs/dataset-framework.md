@@ -212,7 +212,7 @@ things it must check that the current code gets right only implicitly:
 
 ### D. Existing machinery
 
-`core.py`, `graph.py`, `pandas_ext.py`, and `io.py` need little change.
+`core.py`, `graph.py`, `pandas.py`, and `io.py` need little change.
 `io.py` already serializes node graphs, so views are serializable in principle
 (see the caveat on node naming below).
 

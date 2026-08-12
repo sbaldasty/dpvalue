@@ -72,7 +72,7 @@ import pandas as pd
 import polars as pl
 
 from .dataset import DiscreteGaussianFamily, DiscreteLaplaceFamily
-from .pandas_ext import NoisyIntArray
+from .pandas import NoisyIntArray
 
 BASE_URL = "https://analytics.wikimedia.org/published/datasets"
 DEFAULT_ROOT = "data/wikimedia-pageviews"

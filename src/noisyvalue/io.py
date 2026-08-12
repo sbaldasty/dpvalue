@@ -16,7 +16,7 @@ from .analysis import NoisyContingencyTable
 from .core import NoisyFloat, NoisyInt, NoisyBool, consolidate
 from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, DiscreteLaplaceNode, LatentNode, NormalNode
 from .graph import GaussianCensoredNode, LaplaceCensoredNode
-from .pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
+from .pandas import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 
 VERSION = 6

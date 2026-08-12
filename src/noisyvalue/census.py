@@ -83,8 +83,8 @@ import sympy as sp
 from .core import NoisyInt
 from .graph import DerivedNode
 from .graph import DiscreteGaussianNode
-from .pandas_ext import NoisyFloatArray
-from .pandas_ext import NoisyIntArray
+from .pandas import NoisyFloatArray
+from .pandas import NoisyIntArray
 
 DEFAULT_ROOT = "data/2020-pl94-nmf-parquets"
 DEFAULT_DHC_ROOT = "data/2020-dhc-nmf-parquets"

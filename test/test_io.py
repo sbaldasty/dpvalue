@@ -10,7 +10,7 @@ from noisyvalue.core import (
     noisy_value_sampler, sample_noisy_values,
 )
 from noisyvalue.io import load, save
-from noisyvalue.pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
+from noisyvalue.pandas import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 
 def _roundtrip(tmp_path, container):

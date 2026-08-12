@@ -14,7 +14,7 @@ import pandas as pd
 from noisyvalue.core import NoisyFloat, NoisyInt
 from noisyvalue.graph import NormalNode
 from noisyvalue.io import save
-from noisyvalue.pandas_ext import NoisyFloatArray, NoisyIntArray
+from noisyvalue.pandas import NoisyFloatArray, NoisyIntArray
 
 rng = None  # fresh default RNG per draw, fine for a demo fixture
 

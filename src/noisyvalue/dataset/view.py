@@ -27,7 +27,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from ..pandas_ext import NoisyFloatArray, NoisyIntArray
+from ..pandas import NoisyFloatArray, NoisyIntArray
 from .solve import DiscreteGaussianFamily, build_values, solve
 
 MATERIALIZE_WARN_CELLS = 2_000_000

@@ -17,7 +17,7 @@ import pytest
 from noisyvalue import wikimedia as wm
 from noisyvalue.core import sample_noisy_values
 from noisyvalue.dataset import DiscreteLaplaceFamily
-from noisyvalue.pandas_ext import NoisyIntArray
+from noisyvalue.pandas import NoisyIntArray
 
 
 def d(s):

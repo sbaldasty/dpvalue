@@ -4,7 +4,7 @@ import pytest
 
 import conftest as noise
 from noisyvalue.core import NoisyBool, NoisyFloat, NoisyInt, sample_noisy_values
-from noisyvalue.pandas_ext import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
+from noisyvalue.pandas import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 
 def _series(values):
