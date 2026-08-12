@@ -1,4 +1,4 @@
-from . import nmf
+from . import census
 from . import wikimedia
 from .analysis import NoisyContingencyTable, noisy_max, noisy_min
 from .array import float_array_sampler, sample_float_array
@@ -26,4 +26,4 @@ __all__ = [x.__name__ for x in [
     # IO
     load, save,
     # Visualization
-    plot_posterior]] + ["nmf", "wikimedia"]
+    plot_posterior]] + ["census", "wikimedia"]

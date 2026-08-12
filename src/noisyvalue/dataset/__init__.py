@@ -1,11 +1,11 @@
 """A general framework for datasets of noisy measurements.
 
-The library's first dataset interface, `census.py`, stacks four layers with no
-seam between them: a codebook, physical file access, an interpretation of the
-release's own constraint rows, and the construction of posterior node graphs.
-Only the middle two are specific to any one release.  This package owns the
-other two, plus the reconciliation between them, so a second dataset declares
-a schema and a reader instead of forking a thousand lines.
+A dataset extension otherwise stacks four layers with no seam between them: a
+codebook, physical file access, an interpretation of the release's own
+constraint rows, and the construction of posterior node graphs.  Only the
+middle two are specific to any one release.  This package owns the other two,
+plus the reconciliation between them, so a second dataset declares a schema
+and a reader instead of forking a thousand lines.
 
 The layers, and where each lives:
 
@@ -25,8 +25,8 @@ The layers, and where each lives:
 A dataset extension supplies: the schema (data, not code), a `Source` that
 locates and normalizes files, a translation of its native constraint rows into
 the evidence vocabulary, an atom map for any geography whose partition is
-incomparable with the spine, and the name of its noise family.  See `nmf.py`
-for the 2020 Census products built this way.
+incomparable with the spine, and the name of its noise family.  See
+`census.py` for the 2020 Census products built this way.
 """
 
 from .catalog import Axis, Binning, GeoLevel, GeographyUnavailable

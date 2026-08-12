@@ -1,11 +1,15 @@
 # A general dataset framework
 
 **Status:** implemented in `src/noisyvalue/dataset/` (framework) and
-`src/noisyvalue/nmf.py` (the three 2020 Census products built on it), tested
-in `test/test_dataset.py` and `test/test_nmf.py`. `census.py` is untouched and
-still the shipping interface; `nmf.py` is a replacement candidate, verified
-cell-for-cell against it. See "What was built" at the end for what the
-implementation does and does not cover.
+`src/noisyvalue/census.py` (the three 2020 Census products built on it),
+tested in `test/test_dataset.py` and `test/test_census.py`. This is now the
+one shipping Census interface -- the old per-dataset `census.py` this document
+was written against (stacking codebook, physical access, constraint
+interpretation, and posterior construction in one ~1600-line file, with no
+seam between them) was verified cell-for-cell against the framework version
+and then retired; the rest of this document describes that old file in the
+present tense as historical rationale for the design. See "What was built" at
+the end for what the implementation does and does not cover.
 
 ## Motivation
 
@@ -311,7 +315,7 @@ keep.
 | `dataset/evidence.py` | `ZeroRegion`, `ExactHistogram`, `BoundedHistogram`, `Region` |
 | `dataset/solve.py` | `NoiseFamily`, the block ladder, `BlockStrategy`, node constructions |
 | `dataset/view.py` | `View`: the memo table, query resolution, rollups, `unused_evidence()` |
-| `nmf.py` | the Census schema, `NmfSource`, the constraint translation, `fetch_dhc` |
+| `census.py` | the Census schema, `NmfSource`, the constraint translation, `fetch_dhc`, and the `get_pl94`/`get_dhc` convenience wrappers |
 
 ### Where the sketch changed under contact
 

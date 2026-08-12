@@ -1,3 +1,16 @@
+#' pandas dtype names reticulate's `pandas.Series` converter cannot handle
+#' directly: pandas' nullable extension arrays (as opposed to plain numpy
+#' `bool`/`object` dtypes). Confirmed against reticulate for `"boolean"`,
+#' which fails with "names() applied to a non-vector" -- it appears to route
+#' through a masked/categorical-array code path that a `BooleanDtype` array
+#' doesn't support. `census.py`'s `aian` column carries this dtype (nullable
+#' so a rolled-up geography whose contributors disagree can hold `<NA>`).
+#' `"string"` is not listed here: it converts directly when a column has no
+#' missing values, which is the common case for the columns this package
+#' actually reads (`geoid`/`geocode`); a `<NA>` string still degrades to a
+#' plain R list rather than erroring, a narrower gap left for later.
+.UNSUPPORTED_EXTENSION_DTYPES <- c("boolean")
+
 #' Convert a noisyvalue-backed pandas DataFrame into a tibble
 #'
 #' Plain columns convert through the normal reticulate pandas converter;
@@ -21,6 +34,11 @@ as_noisy_tibble <- function(df_py) {
     dtype <- reticulate::py_to_r(series$dtype$name)
     cols[[name]] <- if (dtype %in% .NOISY_DTYPES) {
       new_noisy_vec(series, dtype)
+    } else if (dtype %in% .UNSUPPORTED_EXTENSION_DTYPES) {
+      # Route through plain object dtype, which reticulate maps to an R list
+      # (one element per row, `pd.NA` mapped to `NA`) rather than erroring;
+      # flatten that back to an atomic vector.
+      unlist(reticulate::py_to_r(series$astype("object")), use.names = FALSE)
     } else {
       as.vector(reticulate::py_to_r(series))
     }
