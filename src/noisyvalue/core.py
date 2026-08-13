@@ -7,7 +7,7 @@ from collections import Counter
 from sympy import Abs, And, Eq, Equality, Not, Or, Piecewise, Pow, Rational
 from sympy import sympify
 
-from .graph import NormalNode
+from .graph import GaussianNode
 from .graph import BinomialNode
 from .graph import ConsolidationRule
 from .graph import DiscreteGaussianNode
@@ -407,11 +407,11 @@ class NoisyFloat(NoisyNumber):
         return self.unary_op(NoisyFloat, np.sqrt, sp.sqrt)
 
     @classmethod
-    def normal(cls, loc, scale, obs=None, rng=None):
+    def gaussian(cls, loc, scale, obs=None, rng=None):
         loc = NoisyFloat.lift(loc)
         scale = NoisyFloat.lift(scale)
         deps = [v._root for v in (loc, scale) if v.expr.free_symbols]
-        node = NormalNode.create(deps=deps, loc=loc.expr, scale=scale.expr)
+        node = GaussianNode.create(deps=deps, loc=loc.expr, scale=scale.expr)
         if obs is None:
             rng = util.generator(rng)
             obs = rng.normal(float(loc), float(scale))

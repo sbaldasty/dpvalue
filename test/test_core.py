@@ -14,7 +14,7 @@ from noisyvalue.core import sample_noisy_values
 from noisyvalue.graph import DerivedNode
 from noisyvalue.graph import LatentNode
 from noisyvalue.graph import Node
-from noisyvalue.graph import NormalNode
+from noisyvalue.graph import GaussianNode
 from noisyvalue.graph import NoiseNode
 from noisyvalue.graph import DiscreteGaussianNode
 from noisyvalue.graph import DiscreteLaplaceNode
@@ -299,7 +299,7 @@ def test_noisyint_binomial_invalid_parameter_raises_instead_of_corrupting_draws(
 def test_sampler_resolves_multilayer_law_dependencies():
     z1 = noise.gaussian(0, 1)
     z1_symbol = z1.expr
-    z2 = NormalNode.create(deps=(z1,), loc=z1_symbol, scale=1)
+    z2 = GaussianNode.create(deps=(z1,), loc=z1_symbol, scale=1)
     root = DerivedNode(
         expr=z2.expr,
         deps=(z2,),
@@ -343,7 +343,7 @@ def test_node_derived_uses_explicit_dependencies():
 def test_node_noise_uses_explicit_dependencies():
     theta = LatentNode()
 
-    z = NormalNode.create(deps=(theta,), loc=theta.expr, scale=1)
+    z = GaussianNode.create(deps=(theta,), loc=theta.expr, scale=1)
 
     assert {dep.expr for dep in z.deps} == {theta.expr}
 
@@ -386,66 +386,66 @@ def test_draw_uses_root_node():
     assert noisy_float._root.latent_symbols()
 
 
-# ── NoisyFloat.normal ──────────────────────────────────────────────────────────
+# ── NoisyFloat.gaussian ────────────────────────────────────────────────────────
 
-def test_noisyfloat_normal_returns_noisyfloat_with_float_obs():
-    x = NoisyFloat.normal(0, 1, rng=42)
+def test_noisyfloat_gaussian_returns_noisyfloat_with_float_obs():
+    x = NoisyFloat.gaussian(0, 1, rng=42)
 
     assert isinstance(x, NoisyFloat)
     assert isinstance(x._obs, float)
 
 
-def test_noisyfloat_normal_root_is_noise_node():
-    x = NoisyFloat.normal(0, 1, rng=42)
+def test_noisyfloat_gaussian_root_is_noise_node():
+    x = NoisyFloat.gaussian(0, 1, rng=42)
 
     assert isinstance(x._root, NoiseNode)
 
 
-def test_noisyfloat_normal_explicit_obs_is_used():
-    x = NoisyFloat.normal(0, 1, obs=7.5)
+def test_noisyfloat_gaussian_explicit_obs_is_used():
+    x = NoisyFloat.gaussian(0, 1, obs=7.5)
 
     assert x._obs == 7.5
 
 
-def test_noisyfloat_normal_same_rng_gives_same_obs():
-    assert NoisyFloat.normal(0, 1, rng=42)._obs == NoisyFloat.normal(0, 1, rng=42)._obs
+def test_noisyfloat_gaussian_same_rng_gives_same_obs():
+    assert NoisyFloat.gaussian(0, 1, rng=42)._obs == NoisyFloat.gaussian(0, 1, rng=42)._obs
 
 
-def test_noisyfloat_normal_plain_params_yield_independent_noise_node():
-    x = NoisyFloat.normal(3, 2, rng=42)
+def test_noisyfloat_gaussian_plain_params_yield_independent_noise_node():
+    x = NoisyFloat.gaussian(3, 2, rng=42)
 
     noise_nodes = [n for n in x._root.closure() if isinstance(n, NoiseNode)]
     assert all(len(n.deps) == 0 for n in noise_nodes)
 
 
-def test_noisyfloat_normal_samples_from_correct_distribution():
-    x = NoisyFloat.normal(3.0, 2.0, rng=42)
+def test_noisyfloat_gaussian_samples_from_correct_distribution():
+    x = NoisyFloat.gaussian(3.0, 2.0, rng=42)
     draws = x.sample(n=4000, rng=99).draws
 
     assert draws.mean() == pytest.approx(3.0, abs=0.15)
     assert draws.std() == pytest.approx(2.0, abs=0.15)
 
 
-def test_noisyfloat_normal_noisy_loc_obs_uses_observed_value_of_loc():
-    mu = NoisyFloat.normal(5.0, 0.0001, rng=1)
-    x = NoisyFloat.normal(mu, 0.0001, rng=2)
+def test_noisyfloat_gaussian_noisy_loc_obs_uses_observed_value_of_loc():
+    mu = NoisyFloat.gaussian(5.0, 0.0001, rng=1)
+    x = NoisyFloat.gaussian(mu, 0.0001, rng=2)
 
     assert x._obs == pytest.approx(5.0, abs=0.05)
 
 
-def test_noisyfloat_normal_noisy_loc_propagates_uncertainty_in_sampling():
-    mu = NoisyFloat.normal(5.0, 1.0, rng=1)
-    x = NoisyFloat.normal(mu, 0.1, rng=2)
+def test_noisyfloat_gaussian_noisy_loc_propagates_uncertainty_in_sampling():
+    mu = NoisyFloat.gaussian(5.0, 1.0, rng=1)
+    x = NoisyFloat.gaussian(mu, 0.1, rng=2)
     draws = x.sample(n=4000, rng=99).draws
 
     assert draws.mean() == pytest.approx(5.0, abs=0.2)
     assert draws.std() == pytest.approx(1.0, abs=0.15)
 
 
-def test_noisyfloat_normal_shared_noisy_loc_induces_correlation():
-    mu = NoisyFloat.normal(0, 1, rng=1)
-    x = NoisyFloat.normal(mu, 0.01, rng=2)
-    y = NoisyFloat.normal(mu, 0.01, rng=3)
+def test_noisyfloat_gaussian_shared_noisy_loc_induces_correlation():
+    mu = NoisyFloat.gaussian(0, 1, rng=1)
+    x = NoisyFloat.gaussian(mu, 0.01, rng=2)
+    y = NoisyFloat.gaussian(mu, 0.01, rng=3)
 
     batch_x, batch_y = sample_noisy_values(x, y, n=2000, rng=42)
     corr = np.corrcoef(batch_x.draws, batch_y.draws)[0, 1]
@@ -492,14 +492,14 @@ def test_noisyint_binomial_samples_from_correct_distribution():
 
 
 def test_noisyint_binomial_noisy_p_obs_uses_observed_value_of_p():
-    p = NoisyFloat.normal(0.5, 0.0001, rng=1)
+    p = NoisyFloat.gaussian(0.5, 0.0001, rng=1)
     k = NoisyInt.binomial(10, p, rng=2)
 
     assert k._obs == pytest.approx(5.0, abs=1.0)
 
 
 def test_noisyint_binomial_noisy_p_propagates_uncertainty_in_sampling():
-    p = NoisyFloat.normal(0.5, 0.05, rng=1)
+    p = NoisyFloat.gaussian(0.5, 0.05, rng=1)
     k = NoisyInt.binomial(10, p, rng=2)
     draws = k.sample(n=4000, rng=99).draws
 
@@ -555,7 +555,7 @@ def test_noisyint_discrete_gaussian_samples_have_correct_mean_and_variance():
 
 
 def test_noisyint_discrete_gaussian_noisy_scale_propagates_uncertainty():
-    sigma = NoisyFloat.normal(10.0, 1.0, rng=1)
+    sigma = NoisyFloat.gaussian(10.0, 1.0, rng=1)
     k = NoisyInt.discrete_gaussian(sigma, rng=2)
     draws = k.sample(n=4000, rng=99).draws
 
@@ -631,7 +631,7 @@ def test_mixing_noisy_types_in_one_expression_keeps_every_operand_noisy():
 
 
 def test_a_noisy_float_times_a_noisy_int_keeps_both_posteriors():
-    scale = NoisyFloat.normal(2.0, 0.5, rng=1)
+    scale = NoisyFloat.gaussian(2.0, 0.5, rng=1)
     count = NoisyInt.discrete_gaussian(5, obs=100)
     product = scale * count
 

@@ -139,7 +139,7 @@ class NoiseNode(Node):
         return cls(params, deps)
 
 
-class NormalNode(NoiseNode):
+class GaussianNode(NoiseNode):
     loc = Parameter(0)
     scale = Parameter(1)
 
@@ -504,7 +504,7 @@ class NormalSumRule(ConsolidationRule):
                 and sym in eligible
                 and sym in symbol_to_node
                 and isinstance(symbol_to_node[sym], NoiseNode)
-                and isinstance(symbol_to_node[sym], NormalNode)
+                and isinstance(symbol_to_node[sym], GaussianNode)
                 and not symbol_to_node[sym].deps
             ):
                 normal_terms.append((coeff, symbol_to_node[sym]))
@@ -522,7 +522,7 @@ class NormalSumRule(ConsolidationRule):
         normal_terms, other_args = self._parse(expr, symbol_to_node, eligible)
         combined_mu = sum(c * node.loc for c, node in normal_terms)
         combined_sigma = sp.sqrt(sum((c * node.scale) ** 2 for c, node in normal_terms))
-        new_node = NormalNode.create(loc=combined_mu, scale=combined_sigma)
+        new_node = GaussianNode.create(loc=combined_mu, scale=combined_sigma)
         symbol_to_node[new_node.expr] = new_node
         for _, node in normal_terms:
             eligible.discard(node.expr)

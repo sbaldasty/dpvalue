@@ -6,7 +6,7 @@ skip_if_not(getOption("noisyvalue.test_env_ready", FALSE), "noisyvalue Python ve
   pdext <- reticulate::import("noisyvalue.pandas", convert = FALSE)
   builtins <- reticulate::import_builtins(convert = FALSE)
   vals <- lapply(seq_along(obs), function(i) {
-    core$NoisyFloat$normal(0, 1, obs = obs[i], rng = as.integer(i))
+    core$NoisyFloat$gaussian(0, 1, obs = obs[i], rng = as.integer(i))
   })
   arr <- pdext$NoisyFloatArray$`_from_sequence`(builtins$list(vals))
   noisy_vec(pd$Series(arr))

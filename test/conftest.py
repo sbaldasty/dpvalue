@@ -1,7 +1,7 @@
 import sympy as sp
 
 from noisyvalue.core import NoisyFloat
-from noisyvalue.graph import DerivedNode, NormalNode, BinomialNode, DiscreteGaussianNode
+from noisyvalue.graph import DerivedNode, GaussianNode, BinomialNode, DiscreteGaussianNode
 from sympy import Basic, sympify
 
 
@@ -37,7 +37,7 @@ def _to_expr(value):
 
 
 def gaussian(loc, scale):
-    return NormalNode.create(loc=_to_expr(loc), scale=_to_expr(scale))
+    return GaussianNode.create(loc=_to_expr(loc), scale=_to_expr(scale))
 
 
 def binomial(n, p):

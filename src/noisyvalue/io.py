@@ -14,7 +14,7 @@ from sympy.logic.boolalg import BooleanAtom
 from . import util
 from .analysis import NoisyContingencyTable
 from .core import NoisyFloat, NoisyInt, NoisyBool, consolidate
-from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, DiscreteLaplaceNode, LatentNode, NormalNode
+from .graph import BinomialNode, DerivedNode, DiscreteGaussianNode, DiscreteLaplaceNode, GaussianNode, LatentNode
 from .graph import GaussianCensoredNode, LaplaceCensoredNode
 from .pandas import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
@@ -302,9 +302,9 @@ class NoiseNodeSerializer(NodeSerializer):
         return cls.matches_type(params, deps)
 
 
-class NormalNodeSerializer(NoiseNodeSerializer):
-    tag = "normal"
-    matches_type = NormalNode
+class GaussianNodeSerializer(NoiseNodeSerializer):
+    tag = "gaussian"
+    matches_type = GaussianNode
 
 
 class BinomialNodeSerializer(NoiseNodeSerializer):
