@@ -307,30 +307,42 @@ class NoisyValue:
         return value if isinstance(value, accept) else cls(value, DerivedNode(value))
 
 
+def _is_int_like(x):
+    if isinstance(x, NoisyInt):
+        return True
+    if isinstance(x, NoisyValue):
+        return False
+    return isinstance(x, (int, np.integer)) and not isinstance(x, bool)
+
+
+def _numeric_result_cls(a, b):
+    return NoisyInt if _is_int_like(a) and _is_int_like(b) else NoisyFloat
+
+
 class NoisyNumber(NoisyValue):
     def __init__(self, obs, root):
         super().__init__(obs, root)
 
     def __abs__(self):
-        return self.unary_op(NoisyFloat, abs, Abs)
+        return self.unary_op(type(self), abs, Abs)
 
     def __add__(self, other):
-        return self.bin_op(other, NoisyFloat, op.add)
+        return self.bin_op(other, _numeric_result_cls(self, other), op.add)
 
     def __radd__(self, other):
-        return self.bin_op(other, NoisyFloat, op.add, rev=True)
+        return self.bin_op(other, _numeric_result_cls(self, other), op.add, rev=True)
 
     def __sub__(self, other):
-        return self.bin_op(other, NoisyFloat, op.sub)
+        return self.bin_op(other, _numeric_result_cls(self, other), op.sub)
 
     def __rsub__(self, other):
-        return self.bin_op(other, NoisyFloat, op.sub, rev=True)
+        return self.bin_op(other, _numeric_result_cls(self, other), op.sub, rev=True)
 
     def __mul__(self, other):
-        return self.bin_op(other, NoisyFloat, op.mul)
+        return self.bin_op(other, _numeric_result_cls(self, other), op.mul)
 
     def __rmul__(self, other):
-        return self.bin_op(other, NoisyFloat, op.mul, rev=True)
+        return self.bin_op(other, _numeric_result_cls(self, other), op.mul, rev=True)
 
     def __truediv__(self, other):
         return self.bin_op(other, NoisyFloat, np.divide, op.truediv)
