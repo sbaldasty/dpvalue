@@ -1,4 +1,4 @@
-# General uncertainty calculus for Python
+# Noisy values library for Python
 
 This library supports
 
