@@ -9,6 +9,10 @@ This library supports
 - Sampling of the symbolic posteriors to estimate credible intervals, etc.
 - Visualization of posteriors
 - A custom file format so that tuples of noisy values and shaped arrays of noisy values can be written to persistent storage and shared
+- Noisy types in `pandas` data frames
+- An R compatibility layer via `reticulate`
+- An API to download and use differentially private Census data as noisy values in Python, plus a `tidycensus`-like API for working with noisy Census data in R
+- An API to download and use differentially private Wikimedia page view data as noisy values in Python
 
 The roadmap for future development includes
 
