@@ -142,3 +142,173 @@ def test_observe_release_infers_discreteness():
     v_float = nvdp.observe_release(7.0, mechanism="gaussian", scale=2.0)
     assert isinstance(v_int, NoisyInt)
     assert isinstance(v_float, NoisyFloat)
+
+
+# ── polars Context adapter ───────────────────────────────────────────────────
+
+pl = pytest.importorskip("polars")
+
+polars_ctx = pytest.mark.skipif(
+    pl.__version__ != pytest.importorskip("opendp.mod")._EXPECTED_POLARS_VERSION,
+    reason="opendp's polars integration requires its pinned polars version")
+
+from noisyvalue.pandas import NoisyFloatArray, NoisyIntArray
+
+
+def region_context(rho=0.5, queries=2, income=False):
+    data = {"region": ["a"] * 40 + ["b"] * 58 + ["c"] * 22}
+    if income:
+        data["income"] = [10.0, 20.0] * 60
+    return dp.Context.compositor(
+        data=pl.LazyFrame(data),
+        privacy_unit=dp.unit_of(contributions=1),
+        privacy_loss=dp.loss_of(rho=rho),
+        split_evenly_over=queries,
+        margins=[
+            dp.polars.Margin(by=["region"], invariant="keys",
+                             max_length=200, max_groups=3),
+            dp.polars.Margin(by=[], max_length=200, max_groups=1),
+        ])
+
+
+@polars_ctx
+def test_release_query_wraps_grouped_counts():
+    ctx = region_context(queries=1)
+    release = nvdp.release_query(
+        ctx.query().group_by("region").agg(pl.len().dp.noise()))
+
+    assert release.key_columns == ("region",)
+    assert set(release.frame["region"]) == {"a", "b", "c"}
+    assert isinstance(release.frame["len"].array, NoisyIntArray)
+    aggregate, mechanism, discrete, scale = release.noised_columns["len"]
+    assert (mechanism, discrete) == ("gaussian", True)
+
+    value = release.frame["len"].iloc[0]
+    assert isinstance(value, NoisyInt)
+    draws = value.sample(n=6000, rng=np.random.default_rng(0)).draws
+    assert draws.min() >= 0  # count columns carry the true >= 0 bound
+    assert abs(draws.std() - scale) < 0.15 * scale
+
+
+@polars_ctx
+def test_release_query_wraps_float_sums():
+    ctx = region_context(queries=1, income=True)
+    release = nvdp.release_query(
+        ctx.query().group_by("region").agg(
+            pl.col("income").dp.sum((0.0, 30.0))))
+
+    assert isinstance(release.frame["income"].array, NoisyFloatArray)
+    _, mechanism, discrete, scale = release.noised_columns["income"]
+    assert (mechanism, discrete) == ("gaussian", False)
+    draws = release.frame["income"].iloc[0].sample(
+        n=6000, rng=np.random.default_rng(0)).draws
+    assert abs(draws.std() - scale) < 0.15 * scale
+
+
+@polars_ctx
+def test_identical_queries_share_latents_and_combine():
+    ctx = region_context(queries=2)
+    registry = nvdp.SharedLatentRegistry()
+    build = lambda: ctx.query().group_by("region").agg(pl.len().dp.noise())
+
+    first = nvdp.release_query(build(), registry=registry)
+    second = nvdp.release_query(build(), registry=registry)
+
+    assert first.namespace == second.namespace
+    _, _, _, scale = first.noised_columns["len"]
+    key = first._cell_keys["len"][0]
+    _, variance = registry.posterior(key)
+    assert variance == pytest.approx(scale ** 2 / 2)
+
+    # Cells of both releases for one group are one random variable.
+    row = first.frame.set_index("region").loc["a", "len"]
+    other = second.frame.set_index("region").loc["a", "len"]
+    a, b = sample_noisy_values(row, other, n=2000,
+                               rng=np.random.default_rng(0))
+    np.testing.assert_array_equal(a.draws, b.draws)
+
+
+@polars_ctx
+def test_mean_is_refused_and_keepable():
+    ctx = region_context(queries=2, income=True)
+    build = lambda: ctx.query().group_by("region").agg(
+        pl.col("income").dp.mean((0.0, 30.0)))
+
+    with pytest.raises(ValueError, match="composite aggregate"):
+        nvdp.release_query(build())
+
+    release = nvdp.release_query(build(), on_unsupported="keep")
+    assert release.noised_columns == {}
+    assert release.frame["income"].dtype == float
+
+
+@polars_ctx
+def test_link_sum_tightens_total_by_closed_form():
+    ctx = region_context(queries=2)
+    registry = nvdp.SharedLatentRegistry()
+    fine = nvdp.release_query(
+        ctx.query().group_by("region").agg(pl.len().dp.noise()),
+        registry=registry)
+    coarse = nvdp.release_query(
+        ctx.query().select(pl.len().dp.noise()), registry=registry)
+
+    _, _, _, fine_scale = fine.noised_columns["len"]
+    _, _, _, coarse_scale = coarse.noised_columns["len"]
+    total_key = coarse._cell_keys["len"][0]
+    total_before = float(coarse.frame["len"].iloc[0])
+
+    nvdp.link_sum(fine, coarse)
+
+    center, variance = registry.posterior(total_key)
+    v_direct = coarse_scale ** 2
+    v_parts = 3 * fine_scale ** 2
+    expected_variance = 1.0 / (1.0 / v_direct + 1.0 / v_parts)
+    expected_center = expected_variance * (
+        total_before / v_direct
+        + sum(int(v) for v in fine.frame["len"]) / v_parts)
+    assert variance == pytest.approx(expected_variance)
+    assert center == pytest.approx(expected_center)
+
+    # The total value released before the link samples from the tightened law.
+    draws = coarse.frame["len"].iloc[0].sample(
+        n=8000, rng=np.random.default_rng(0)).draws
+    assert abs(draws.std() - math.sqrt(variance)) < 0.15 * math.sqrt(variance)
+
+
+@polars_ctx
+def test_link_sum_refuses_double_folding():
+    ctx = region_context(queries=2)
+    registry = nvdp.SharedLatentRegistry()
+    fine = nvdp.release_query(
+        ctx.query().group_by("region").agg(pl.len().dp.noise()),
+        registry=registry)
+    coarse = nvdp.release_query(
+        ctx.query().select(pl.len().dp.noise()), registry=registry)
+
+    nvdp.link_sum(fine, coarse)
+    with pytest.raises(ValueError, match="double-count"):
+        nvdp.link_sum(fine, coarse)
+
+
+@polars_ctx
+def test_link_sum_requires_one_registry():
+    ctx = region_context(queries=2)
+    fine = nvdp.release_query(
+        ctx.query().group_by("region").agg(pl.len().dp.noise()),
+        registry=nvdp.SharedLatentRegistry())
+    coarse = nvdp.release_query(
+        ctx.query().select(pl.len().dp.noise()),
+        registry=nvdp.SharedLatentRegistry())
+    with pytest.raises(ValueError, match="one shared registry"):
+        nvdp.link_sum(fine, coarse)
+
+
+@polars_ctx
+def test_link_sum_requires_coarser_keys():
+    ctx = region_context(queries=2)
+    registry = nvdp.SharedLatentRegistry()
+    build = lambda: ctx.query().group_by("region").agg(pl.len().dp.noise())
+    fine = nvdp.release_query(build(), registry=registry)
+    other = nvdp.release_query(build(), registry=registry)
+    with pytest.raises(ValueError, match="proper"):
+        nvdp.link_sum(fine, other)

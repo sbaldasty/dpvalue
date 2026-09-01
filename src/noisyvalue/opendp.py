@@ -34,6 +34,7 @@ sampler resolves latents by symbolic solve and cannot condition an
 overdetermined system, so combination has to happen when the value is built.
 """
 
+import hashlib
 import math
 
 import sympy as sp
@@ -49,6 +50,7 @@ except ImportError as e:  # pragma: no cover
 from .core import NoisyFloat, NoisyInt
 from .graph import DiscreteGaussianNode, DiscreteLaplaceNode
 from .graph import GaussianNode, LaplaceNode
+from .pandas import NoisyFloatArray, NoisyIntArray
 
 
 _INT_ATOMS = frozenset(
@@ -94,18 +96,34 @@ def _release_variance(mechanism, discrete, scale):
     return 2.0 * scale ** 2
 
 
-def _posterior_node(mechanism, discrete, center, scale):
+# A support bound this far outside the posterior's centre lies beyond the
+# lattice nodes' sampled grid entirely, so it is dropped as provably inert
+# (same reasoning as `dataset.solve.LatticeFamily._drop_inert`).
+_INERT_FLOOR = 60.0
+_INERT_SCALES = {"gaussian": 8.0, "laplace": 32.0}
+
+
+def _posterior_node(mechanism, discrete, center, scale, low=None):
     """A noise node whose law *is* the statistic's posterior.
 
     Under a flat prior a single additive-noise measurement leaves the noise
     law re-centred at the observation, so the posterior is encoded directly
     as a node rather than through a latent-plus-constraint pair (the same
-    choice `dataset/solve.py` makes for release cells).
+    choice `dataset/solve.py` makes for release cells).  `low` truncates the
+    support (discrete only) -- the prior knowledge that the true value cannot
+    fall below it, e.g. zero for counts.
     """
     node_cls = _NODE_CLASSES[(mechanism, discrete)]
+    if low is not None and not discrete:
+        raise ValueError("Support bounds are only supported for discrete laws")
+    if low is not None:
+        slack = max(_INERT_FLOOR, _INERT_SCALES[mechanism] * float(scale))
+        if low < max(float(center), low) - slack:
+            low = None
     params = {"loc": sp.Float(float(center)), "scale": sp.Float(float(scale))}
     if discrete:
-        params.update(low=-sp.oo, high=sp.oo)
+        params.update(
+            low=-sp.oo if low is None else sp.Integer(int(low)), high=sp.oo)
     return node_cls.create(**params)
 
 
@@ -114,19 +132,21 @@ def _issue(obs, node, discrete):
     return cls(obs, node)
 
 
-def observe_release(obs, *, mechanism, scale, discrete=None):
+def observe_release(obs, *, mechanism, scale, discrete=None, low=None):
     """Interpret one already-released number as a `NoisyValue`.
 
     `mechanism` is `"gaussian"` or `"laplace"`; `discrete` selects the
-    integer-lattice law and defaults to whether `obs` is an integer.  The
-    value is unshared -- use a `SharedLatentRegistry` to give repeated
-    measurements of one statistic a common identity.
+    integer-lattice law and defaults to whether `obs` is an integer; `low`
+    is prior knowledge that the true value cannot fall below it (discrete
+    only), e.g. zero for counts.  The value is unshared -- use a
+    `SharedLatentRegistry` to give repeated measurements of one statistic a
+    common identity.
     """
     if mechanism not in ("gaussian", "laplace"):
         raise ValueError(f"Unknown mechanism: {mechanism!r}")
     if discrete is None:
         discrete = isinstance(obs, int)
-    node = _posterior_node(mechanism, discrete, obs, scale)
+    node = _posterior_node(mechanism, discrete, obs, scale, low=low)
     return _issue(obs, node, discrete)
 
 
@@ -160,16 +180,21 @@ class SharedLatentRegistry:
 
     def __init__(self):
         self._stats = {}
+        self._folded_sums = set()
 
-    def observe(self, key, obs, *, mechanism, scale, discrete=None):
-        """Record a release of the statistic `key` and return its value."""
+    def observe(self, key, obs, *, mechanism, scale, discrete=None, low=None):
+        """Record a release of the statistic `key` and return its value.
+
+        `low` bounds the support (see `observe_release`); it is fixed by the
+        key's first observation and ignored afterwards.
+        """
         if mechanism not in ("gaussian", "laplace"):
             raise ValueError(f"Unknown mechanism: {mechanism!r}")
         if discrete is None:
             discrete = isinstance(obs, int)
         stat = self._stats.get(key)
         if stat is None:
-            node = _posterior_node(mechanism, discrete, obs, scale)
+            node = _posterior_node(mechanism, discrete, obs, scale, low=low)
             self._stats[key] = _Statistic(
                 mechanism, discrete, float(obs),
                 _release_variance(mechanism, discrete, scale), node)
@@ -205,11 +230,18 @@ class SharedLatentRegistry:
         the summed variance, a close approximation.  As with `add_estimate`,
         the induced correlation between total and parts is not represented.
         """
+        fold = (total_key, tuple(part_keys))
+        if fold in self._folded_sums:
+            raise ValueError(
+                f"The sum of {list(part_keys)} was already folded into "
+                f"{total_key!r}; folding the same evidence twice would "
+                "double-count it")
         parts = [self._require(k) for k in part_keys]
         self.add_estimate(
             total_key,
             sum(p.center for p in parts),
             sum(p.variance for p in parts))
+        self._folded_sums.add(fold)
 
     def posterior(self, key):
         """(center, variance) of the statistic's current posterior."""
@@ -308,3 +340,207 @@ def _wrap(inner, input_domain, input_metric, mechanism, scale,
     return dp.m.make_user_measurement(
         input_domain, input_metric, inner.output_measure, function,
         privacy_map=inner.map)
+
+
+# ── polars Context adapter ───────────────────────────────────────────────────
+#
+# OpenDP's polars integration is declarative enough to drive the whole
+# wrapping automatically: `query.summarize()` reports, per noised output
+# column, the aggregate, the noise distribution, and its scale -- exactly the
+# public metadata a posterior needs -- and the released frame's remaining
+# columns are the group-by keys, which give each cell a stable identity for
+# the shared-latent registry.  `release_query` runs one query through that
+# pipeline; `link_sum` folds a fine partition's sums into a coarser release
+# of the same aggregate.
+
+_DISTRIBUTIONS = {
+    "Integer Gaussian": ("gaussian", True),
+    "Float Gaussian": ("gaussian", False),
+    "Integer Laplace": ("laplace", True),
+    "Float Laplace": ("laplace", False),
+}
+
+
+def _query_namespace(query):
+    """A stable identity for the statistic a query measures.
+
+    Two queries with byte-identical plans measure the same statistics, so a
+    hash of the serialized plan lets identical queries share latents without
+    any declaration.  The plan does *not* embed the data -- a registry
+    therefore describes one private dataset, and releases from different
+    datasets must use different registries (or explicit namespaces).
+    """
+    try:
+        blob = query.serialize()
+    except Exception:
+        blob = query.explain().encode()
+    return hashlib.blake2b(blob, digest_size=8).hexdigest()
+
+
+class QueryRelease:
+    """One collected DP release, with noised columns wrapped as noisy values.
+
+    - `frame`: tidy pandas DataFrame; group-by key columns are plain data,
+      each noised column is a `NoisyIntArray`/`NoisyFloatArray` whose cells
+      are live views of the registry's posteriors (they tighten in place as
+      more evidence about the same statistics is folded in).
+    - `key_columns`: the group-by columns, in released order.
+    - `noised_columns`: `{name: (aggregate, mechanism, discrete, scale)}`.
+    - `namespace`: the identity prefix under which cells were registered.
+    """
+
+    def __init__(self, frame, key_columns, noised_columns, namespace,
+                 registry, cell_keys):
+        self.frame = frame
+        self.key_columns = key_columns
+        self.noised_columns = noised_columns
+        self.namespace = namespace
+        self._registry = registry
+        self._cell_keys = cell_keys
+
+    def __repr__(self):
+        return (f"QueryRelease(namespace={self.namespace!r}, "
+                f"keys={list(self.key_columns)}, "
+                f"noised={list(self.noised_columns)})\n{self.frame}")
+
+
+def release_query(query, *, registry=None, namespace=None,
+                  on_unsupported="raise"):
+    """Release an OpenDP polars query as a frame of noisy values.
+
+    `query` is a `LazyFrameQuery` from `dp.Context.query()`.  The query's
+    own `summarize()` supplies each noised column's mechanism and scale;
+    OpenDP performs the release untouched (`release().collect()` -- the
+    query's entire budget is spent here, once), and each released cell is
+    wrapped in a posterior over its true value.  Unsigned released columns
+    get the prior bound true >= 0.
+
+    With a `registry`, every cell is observed under the key
+    `(namespace, column, ((key_col, value), ...))`, so releasing an
+    identical query again -- or linking a related one via `link_sum` --
+    combines evidence instead of creating parallel values.  `namespace`
+    defaults to a hash of the query plan; pass it explicitly to share
+    latents across queries whose plans differ only in noise parameters.
+
+    Released columns the wrapper cannot model -- composite aggregates like
+    `dp.mean` (released as a ratio of two noised numbers) or unknown
+    distributions -- raise by default; `on_unsupported="keep"` passes them
+    through as plain numbers instead.
+    """
+    if on_unsupported not in ("raise", "keep"):
+        raise ValueError(f"Unknown on_unsupported mode: {on_unsupported!r}")
+    if namespace is None:
+        namespace = _query_namespace(query)
+
+    summary = {}
+    for row in query.summarize().to_dicts():
+        summary.setdefault(row["column"], []).append(row)
+
+    released = query.release().collect()
+
+    noised = {}
+    unsupported = {}
+    for column, rows in summary.items():
+        if len(rows) != 1:
+            unsupported[column] = (
+                f"composite aggregate ({' + '.join(r['aggregate'] for r in rows)}) "
+                "is released as a ratio, not an additively noised number")
+            continue
+        row = rows[0]
+        if row["distribution"] not in _DISTRIBUTIONS:
+            unsupported[column] = f"unknown distribution {row['distribution']!r}"
+            continue
+        mechanism, discrete = _DISTRIBUTIONS[row["distribution"]]
+        noised[column] = (row["aggregate"], mechanism, discrete, row["scale"])
+    if unsupported and on_unsupported == "raise":
+        problems = "; ".join(f"{c}: {why}" for c, why in unsupported.items())
+        raise ValueError(
+            f"Cannot wrap released column(s) as noisy values ({problems}). "
+            'Pass on_unsupported="keep" to release them as plain numbers.')
+
+    key_columns = tuple(c for c in released.columns if c not in summary)
+    key_rows = released.select(key_columns).rows() if key_columns \
+        else [()] * released.height
+
+    import polars as pl
+    unsigned = {pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
+
+    frame = released.to_pandas()
+    cell_keys = {}
+    for column, (aggregate, mechanism, discrete, scale) in noised.items():
+        low = 0 if released.schema[column] in unsigned else None
+        keys = []
+        values = []
+        for obs, key_row in zip(released[column].to_list(), key_rows):
+            obs = int(obs) if discrete else float(obs)
+            if registry is None:
+                keys.append(None)
+                values.append(observe_release(
+                    obs, mechanism=mechanism, scale=scale,
+                    discrete=discrete, low=low))
+            else:
+                key = (namespace, column, tuple(zip(key_columns, key_row)))
+                keys.append(key)
+                values.append(registry.observe(
+                    key, obs, mechanism=mechanism, scale=scale,
+                    discrete=discrete, low=low))
+        cell_keys[column] = tuple(keys)
+        array_cls = NoisyIntArray if discrete else NoisyFloatArray
+        frame[column] = array_cls._from_sequence(values)
+
+    return QueryRelease(frame, key_columns, noised, namespace, registry,
+                        cell_keys)
+
+
+def link_sum(fine, coarse, column=None):
+    """Fold a fine release's group sums into a coarser release's posteriors.
+
+    `fine` and `coarse` are `QueryRelease`s of the same additive aggregate
+    over the same data, made through the same registry, where `coarse`
+    groups by a proper subset of `fine`'s key columns (possibly none: a
+    grand total).  Each coarse cell equals the sum of its matching fine
+    cells, so the fine cells' summed posterior enters the coarse cell's as
+    an independent estimate -- every noisy value already issued for the
+    coarse cells tightens in place.
+
+    Assumes the fine release covers each coarse group completely (group by
+    a margin with `invariant="keys"`; a DP-thresholded key set silently
+    drops small groups and would bias the fold) and that the two releases'
+    noise is independent (distinct queries always are).  As in
+    `SharedLatentRegistry.add_sum_estimate`, the induced coarse-fine
+    correlation is not represented in the graph.
+    """
+    if fine._registry is None or fine._registry is not coarse._registry:
+        raise ValueError(
+            "link_sum needs both releases made through one shared registry")
+    if not set(coarse.key_columns) < set(fine.key_columns):
+        raise ValueError(
+            f"Coarse keys {list(coarse.key_columns)} must be a proper "
+            f"subset of fine keys {list(fine.key_columns)}")
+    if column is None:
+        shared = set(fine.noised_columns) & set(coarse.noised_columns)
+        if len(shared) != 1:
+            raise ValueError(
+                f"Pass column= explicitly; the releases share "
+                f"{sorted(shared) or 'no'} noised columns")
+        (column,) = shared
+
+    fine_pos = {c: i for i, c in enumerate(fine.key_columns)}
+    project = tuple(fine_pos[c] for c in coarse.key_columns)
+    parts_by_group = {}
+    for key, cell_key in zip(
+            fine.frame[list(fine.key_columns)].itertuples(index=False),
+            fine._cell_keys[column]):
+        group = tuple(key[i] for i in project)
+        parts_by_group.setdefault(group, []).append(cell_key)
+
+    registry = coarse._registry
+    coarse_rows = coarse.frame[list(coarse.key_columns)].itertuples(index=False) \
+        if coarse.key_columns else [()] * len(coarse.frame)
+    for key, cell_key in zip(coarse_rows, coarse._cell_keys[column]):
+        parts = parts_by_group.get(tuple(key))
+        if not parts:
+            raise ValueError(
+                f"No fine cells found for coarse group {tuple(key)}; the "
+                "fine release does not cover this group")
+        registry.add_sum_estimate(cell_key, parts)

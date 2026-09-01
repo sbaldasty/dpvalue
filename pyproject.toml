@@ -17,7 +17,10 @@ dependencies = [
   "jupyter>=1.1.1",
   "numpy>=2.4.4",
   "pandas>=3.0.3",
-  "polars>=1.42.1",
+  # opendp's polars integration pins the exact polars version its Rust core
+  # was built against; the [opendp] extra therefore decides which version in
+  # this range is installed.
+  "polars>=1.36.1",
   "scipy>=1.17.1",
   "sympy>=1.14.0",
 ]
@@ -34,7 +37,7 @@ classifiers = [
 
 [project.optional-dependencies]
 opendp = [
-  "opendp>=0.13",
+  "opendp[polars]>=0.13",
 ]
 dev = [
   "matplotlib>=3.10.8",
@@ -42,7 +45,7 @@ dev = [
   "ipykernel>=7.2.0",
   "pip>=23.0.1",
   "statsmodels>=0.14.6",
-  "opendp>=0.13",
+  "opendp[polars]>=0.13",
 ]
 
 [tool.pytest.ini_options]
