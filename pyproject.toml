@@ -33,12 +33,16 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+opendp = [
+  "opendp>=0.13",
+]
 dev = [
   "matplotlib>=3.10.8",
   "pytest>=8.0",
   "ipykernel>=7.2.0",
   "pip>=23.0.1",
   "statsmodels>=0.14.6",
+  "opendp>=0.13",
 ]
 
 [tool.pytest.ini_options]

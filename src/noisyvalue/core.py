@@ -8,6 +8,7 @@ from sympy import Abs, And, Eq, Equality, Not, Or, Piecewise, Pow, Rational
 from sympy import sympify
 
 from .graph import GaussianNode
+from .graph import LaplaceNode
 from .graph import BinomialNode
 from .graph import ConsolidationRule
 from .graph import DiscreteGaussianNode
@@ -415,6 +416,17 @@ class NoisyFloat(NoisyNumber):
         if obs is None:
             rng = util.generator(rng)
             obs = rng.normal(float(loc), float(scale))
+        return cls(obs, node)
+
+    @classmethod
+    def laplace(cls, loc, scale, obs=None, rng=None):
+        loc = NoisyFloat.lift(loc)
+        scale = NoisyFloat.lift(scale)
+        deps = [v._root for v in (loc, scale) if v.expr.free_symbols]
+        node = LaplaceNode.create(deps=deps, loc=loc.expr, scale=scale.expr)
+        if obs is None:
+            rng = util.generator(rng)
+            obs = rng.laplace(float(loc), float(scale))
         return cls(obs, node)
 
 

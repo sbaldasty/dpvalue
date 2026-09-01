@@ -162,6 +162,38 @@ class GaussianNode(NoiseNode):
         return np.where(valid, result, np.nan)
 
 
+class LaplaceNode(NoiseNode):
+    loc = Parameter(0)
+    scale = Parameter(1)
+
+    def sympy_rv(self):
+        return Laplace(Name.fresh(), self.loc, self.scale)
+
+    def sample(self, rng, size=None, resolved=()):
+        loc = float(self.loc.subs(resolved))
+        scale = float(self.scale.subs(resolved))
+        return rng.laplace(loc, scale, size=size)
+
+    @classmethod
+    def sample_arrays(cls, rng, loc, scale):
+        loc = np.asarray(loc, dtype=float)
+        scale = np.asarray(scale, dtype=float)
+        valid = np.isfinite(loc) & (scale > 0)
+        if np.all(valid):
+            return rng.laplace(loc, scale)
+        result = rng.laplace(np.where(valid, loc, 0.0), np.where(valid, scale, 1.0))
+        return np.where(valid, result, np.nan)
+
+    def quantile(self, u):
+        # sympy 1.14's LaplaceDistribution._quantile returns None, so
+        # `sympy.stats.quantile` falls back to an unsolvable integral;
+        # visualization prefers this closed form instead.
+        loc = float(self.loc)
+        scale = float(self.scale)
+        u = np.asarray(u, dtype=float)
+        return loc - scale * np.sign(u - 0.5) * np.log1p(-2.0 * np.abs(u - 0.5))
+
+
 class BinomialNode(NoiseNode):
     trials = Parameter(0)
     prob = Parameter(1)

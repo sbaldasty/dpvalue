@@ -426,6 +426,29 @@ def test_noisyfloat_gaussian_samples_from_correct_distribution():
     assert draws.std() == pytest.approx(2.0, abs=0.15)
 
 
+# ── NoisyFloat.laplace ─────────────────────────────────────────────────────────
+
+def test_noisyfloat_laplace_returns_noisyfloat_with_float_obs():
+    x = NoisyFloat.laplace(0, 1, rng=42)
+
+    assert isinstance(x, NoisyFloat)
+    assert isinstance(x._obs, float)
+
+
+def test_noisyfloat_laplace_explicit_obs_is_used():
+    x = NoisyFloat.laplace(0, 1, obs=7.5)
+
+    assert x._obs == 7.5
+
+
+def test_noisyfloat_laplace_samples_from_correct_distribution():
+    x = NoisyFloat.laplace(3.0, 2.0, rng=42)
+    draws = x.sample(n=4000, rng=99).draws
+
+    assert draws.mean() == pytest.approx(3.0, abs=0.2)
+    assert draws.std() == pytest.approx(2.0 * np.sqrt(2.0), abs=0.25)
+
+
 def test_noisyfloat_gaussian_noisy_loc_obs_uses_observed_value_of_loc():
     mu = NoisyFloat.gaussian(5.0, 0.0001, rng=1)
     x = NoisyFloat.gaussian(mu, 0.0001, rng=2)
