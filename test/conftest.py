@@ -37,7 +37,8 @@ def _to_expr(value):
 
 
 def gaussian(loc, scale):
-    return GaussianNode.create(loc=_to_expr(loc), scale=_to_expr(scale))
+    return GaussianNode.create(
+        loc=_to_expr(loc), scale=_to_expr(scale), low=-sp.oo, high=sp.oo)
 
 
 def binomial(n, p):

@@ -97,33 +97,39 @@ def _release_variance(mechanism, discrete, scale):
 
 
 # A support bound this far outside the posterior's centre lies beyond the
-# lattice nodes' sampled grid entirely, so it is dropped as provably inert
-# (same reasoning as `dataset.solve.LatticeFamily._drop_inert`).
+# noise's sampled/informative range entirely, so it is dropped as provably
+# inert (same reasoning as `dataset.solve.LatticeFamily._drop_inert`).
 _INERT_FLOOR = 60.0
 _INERT_SCALES = {"gaussian": 8.0, "laplace": 32.0}
 
 
-def _posterior_node(mechanism, discrete, center, scale, low=None):
+def _posterior_node(mechanism, discrete, center, scale, low=None, high=None):
     """A noise node whose law *is* the statistic's posterior.
 
     Under a flat prior a single additive-noise measurement leaves the noise
     law re-centred at the observation, so the posterior is encoded directly
     as a node rather than through a latent-plus-constraint pair (the same
-    choice `dataset/solve.py` makes for release cells).  `low` truncates the
-    support (discrete only) -- the prior knowledge that the true value cannot
-    fall below it, e.g. zero for counts.
+    choice `dataset/solve.py` makes for release cells).  `low`/`high` are
+    prior knowledge that the true value cannot fall outside them (e.g. zero
+    as a lower bound for counts, or a released statistic's own declared
+    sensitivity bounds) -- both `GaussianNode`/`LaplaceNode` and their
+    discrete-lattice counterparts accept truncation the same way.
     """
     node_cls = _NODE_CLASSES[(mechanism, discrete)]
-    if low is not None and not discrete:
-        raise ValueError("Support bounds are only supported for discrete laws")
-    if low is not None:
-        slack = max(_INERT_FLOOR, _INERT_SCALES[mechanism] * float(scale))
-        if low < max(float(center), low) - slack:
-            low = None
-    params = {"loc": sp.Float(float(center)), "scale": sp.Float(float(scale))}
-    if discrete:
-        params.update(
-            low=-sp.oo if low is None else sp.Integer(int(low)), high=sp.oo)
+    center = float(center)
+    scale = float(scale)
+    slack = max(_INERT_FLOOR, _INERT_SCALES[mechanism] * scale)
+    if low is not None and low < center - slack:
+        low = None
+    if high is not None and high > center + slack:
+        high = None
+    to_bound = (lambda v: sp.Integer(int(v))) if discrete else (lambda v: sp.Float(float(v)))
+    params = {
+        "loc": sp.Float(center),
+        "scale": sp.Float(scale),
+        "low": -sp.oo if low is None else to_bound(low),
+        "high": sp.oo if high is None else to_bound(high),
+    }
     return node_cls.create(**params)
 
 
@@ -132,13 +138,14 @@ def _issue(obs, node, discrete):
     return cls(obs, node)
 
 
-def observe_release(obs, *, mechanism, scale, discrete=None, low=None):
+def observe_release(obs, *, mechanism, scale, discrete=None, low=None, high=None):
     """Interpret one already-released number as a `NoisyValue`.
 
     `mechanism` is `"gaussian"` or `"laplace"`; `discrete` selects the
-    integer-lattice law and defaults to whether `obs` is an integer; `low`
-    is prior knowledge that the true value cannot fall below it (discrete
-    only), e.g. zero for counts.  The value is unshared -- use a
+    integer-lattice law and defaults to whether `obs` is an integer;
+    `low`/`high` are prior knowledge that the true value cannot fall outside
+    them, e.g. zero as a lower bound for counts, or declared sensitivity
+    bounds on a released statistic.  The value is unshared -- use a
     `SharedLatentRegistry` to give repeated measurements of one statistic a
     common identity.
     """
@@ -146,7 +153,7 @@ def observe_release(obs, *, mechanism, scale, discrete=None, low=None):
         raise ValueError(f"Unknown mechanism: {mechanism!r}")
     if discrete is None:
         discrete = isinstance(obs, int)
-    node = _posterior_node(mechanism, discrete, obs, scale, low=low)
+    node = _posterior_node(mechanism, discrete, obs, scale, low=low, high=high)
     return _issue(obs, node, discrete)
 
 
@@ -182,11 +189,11 @@ class SharedLatentRegistry:
         self._stats = {}
         self._folded_sums = set()
 
-    def observe(self, key, obs, *, mechanism, scale, discrete=None, low=None):
+    def observe(self, key, obs, *, mechanism, scale, discrete=None, low=None, high=None):
         """Record a release of the statistic `key` and return its value.
 
-        `low` bounds the support (see `observe_release`); it is fixed by the
-        key's first observation and ignored afterwards.
+        `low`/`high` bound the support (see `observe_release`); they are
+        fixed by the key's first observation and ignored afterwards.
         """
         if mechanism not in ("gaussian", "laplace"):
             raise ValueError(f"Unknown mechanism: {mechanism!r}")
@@ -194,7 +201,7 @@ class SharedLatentRegistry:
             discrete = isinstance(obs, int)
         stat = self._stats.get(key)
         if stat is None:
-            node = _posterior_node(mechanism, discrete, obs, scale, low=low)
+            node = _posterior_node(mechanism, discrete, obs, scale, low=low, high=high)
             self._stats[key] = _Statistic(
                 mechanism, discrete, float(obs),
                 _release_variance(mechanism, discrete, scale), node)
@@ -285,33 +292,38 @@ class SharedLatentRegistry:
 
 
 def make_gaussian(input_domain, input_metric, scale, *,
-                  key=None, keys=None, registry=None, **kwargs):
+                  key=None, keys=None, registry=None, low=None, high=None,
+                  **kwargs):
     """`dp.m.make_gaussian`, releasing `NoisyValue`s instead of numbers.
 
     Scalar domains yield one value (`key` names its statistic); vector
     domains yield a list (`keys` names each element's statistic, aligned by
     position).  Keys require a `registry`; without keys each release is an
-    unshared value.  Extra keyword arguments pass through to the OpenDP
-    constructor.
+    unshared value.  `low`/`high` are prior knowledge that the true value
+    cannot fall outside them (see `observe_release`); passed to every
+    released element alike.  Extra keyword arguments pass through to the
+    OpenDP constructor.
     """
     inner = dp.m.make_gaussian(input_domain, input_metric, scale, **kwargs)
     return _wrap(inner, input_domain, input_metric, "gaussian", scale,
-                 key, keys, registry)
+                 key, keys, registry, low, high)
 
 
 def make_laplace(input_domain, input_metric, scale, *,
-                 key=None, keys=None, registry=None, **kwargs):
+                 key=None, keys=None, registry=None, low=None, high=None,
+                 **kwargs):
     """`dp.m.make_laplace`, releasing `NoisyValue`s instead of numbers.
 
-    See `make_gaussian` for the `key`/`keys`/`registry` conventions.
+    See `make_gaussian` for the `key`/`keys`/`registry`/`low`/`high`
+    conventions.
     """
     inner = dp.m.make_laplace(input_domain, input_metric, scale, **kwargs)
     return _wrap(inner, input_domain, input_metric, "laplace", scale,
-                 key, keys, registry)
+                 key, keys, registry, low, high)
 
 
 def _wrap(inner, input_domain, input_metric, mechanism, scale,
-          key, keys, registry):
+          key, keys, registry, low=None, high=None):
     vector, discrete = _parse_carrier(input_domain)
     if vector and key is not None:
         raise ValueError("Vector domains take keys=, not key=")
@@ -323,9 +335,10 @@ def _wrap(inner, input_domain, input_metric, mechanism, scale,
     def build(released, k):
         if registry is not None and k is not None:
             return registry.observe(k, released, mechanism=mechanism,
-                                    scale=scale, discrete=discrete)
+                                    scale=scale, discrete=discrete,
+                                    low=low, high=high)
         return observe_release(released, mechanism=mechanism, scale=scale,
-                               discrete=discrete)
+                               discrete=discrete, low=low, high=high)
 
     def function(arg):
         released = inner(arg)

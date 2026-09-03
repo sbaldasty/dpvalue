@@ -140,8 +140,16 @@ class NoiseNode(Node):
 
 
 class GaussianNode(NoiseNode):
+    """A Gaussian, optionally truncated to `[low, high]` -- pass `-oo`/`oo`
+    for an unbounded side (see `LocationScaleLatticeNode` for the same
+    convention on the discrete lattice; an unbounded `GaussianNode` is just
+    this class with both bounds infinite).
+    """
+
     loc = Parameter(0)
     scale = Parameter(1)
+    low = Parameter(2)
+    high = Parameter(3)
 
     def sympy_rv(self):
         return Normal(Name.fresh(), self.loc, self.scale)
@@ -149,49 +157,119 @@ class GaussianNode(NoiseNode):
     def sample(self, rng, size=None, resolved=()):
         loc = float(self.loc.subs(resolved))
         scale = float(self.scale.subs(resolved))
-        return rng.normal(loc, scale, size=size)
+        low = LocationScaleLatticeNode.resolve_bound(self.low, resolved)
+        high = LocationScaleLatticeNode.resolve_bound(self.high, resolved)
+        return self._draw(rng, loc, scale, low, high, size)
+
+    @staticmethod
+    def _draw(rng, loc, scale, low, high, size=None):
+        if low == -np.inf and high == np.inf:
+            return rng.normal(loc, scale, size=size)
+        a, b = (low - loc) / scale, (high - loc) / scale
+        return scipy.stats.truncnorm.rvs(
+            a, b, loc=loc, scale=scale, size=size, random_state=rng)
 
     @classmethod
-    def sample_arrays(cls, rng, loc, scale):
+    def sample_arrays(cls, rng, loc, scale, low, high):
         loc = np.asarray(loc, dtype=float)
         scale = np.asarray(scale, dtype=float)
-        valid = np.isfinite(loc) & (scale > 0)
-        if np.all(valid):
-            return rng.normal(loc, scale)
-        result = rng.normal(np.where(valid, loc, 0.0), np.where(valid, scale, 1.0))
-        return np.where(valid, result, np.nan)
+        low = np.asarray(low, dtype=float)
+        high = np.asarray(high, dtype=float)
+        valid = np.isfinite(loc) & (scale > 0) & (low <= high)
+        unbounded = valid & (low == -np.inf) & (high == np.inf)
+        result = np.full(loc.shape, np.nan, dtype=float)
+        if np.any(unbounded):
+            result[unbounded] = rng.normal(loc[unbounded], scale[unbounded])
+        bounded = valid & ~unbounded
+        if np.any(bounded):
+            l, s = loc[bounded], scale[bounded]
+            a, b = (low[bounded] - l) / s, (high[bounded] - l) / s
+            result[bounded] = scipy.stats.truncnorm.rvs(
+                a, b, loc=l, scale=s, random_state=rng)
+        return result
+
+    def quantile(self, u):
+        loc = float(self.loc)
+        scale = float(self.scale)
+        low = LocationScaleLatticeNode.resolve_bound(self.low, ())
+        high = LocationScaleLatticeNode.resolve_bound(self.high, ())
+        a = -np.inf if low == -np.inf else (low - loc) / scale
+        b = np.inf if high == np.inf else (high - loc) / scale
+        return scipy.stats.truncnorm.ppf(u, a, b, loc=loc, scale=scale)
 
 
 class LaplaceNode(NoiseNode):
+    """A Laplace, optionally truncated to `[low, high]` -- see `GaussianNode`
+    for the truncation convention. Truncated sampling/quantiles go through
+    inverse-CDF (scipy has no two-sided truncated Laplace); the CDF and its
+    inverse are the closed forms below.
+    """
+
     loc = Parameter(0)
     scale = Parameter(1)
+    low = Parameter(2)
+    high = Parameter(3)
 
     def sympy_rv(self):
         return Laplace(Name.fresh(), self.loc, self.scale)
 
+    @staticmethod
+    def _cdf(x, loc, scale):
+        z = (x - loc) / scale
+        return np.where(z <= 0, 0.5 * np.exp(z), 1.0 - 0.5 * np.exp(-z))
+
+    @staticmethod
+    def _ppf(u, loc, scale):
+        # sympy 1.14's LaplaceDistribution._quantile returns None, so
+        # `sympy.stats.quantile` falls back to an unsolvable integral;
+        # this closed form is used instead, both directly (unbounded case)
+        # and as the inner inversion for the truncated case below.
+        u = np.asarray(u, dtype=float)
+        return loc - scale * np.sign(u - 0.5) * np.log1p(-2.0 * np.abs(u - 0.5))
+
     def sample(self, rng, size=None, resolved=()):
         loc = float(self.loc.subs(resolved))
         scale = float(self.scale.subs(resolved))
-        return rng.laplace(loc, scale, size=size)
+        low = LocationScaleLatticeNode.resolve_bound(self.low, resolved)
+        high = LocationScaleLatticeNode.resolve_bound(self.high, resolved)
+        return self._draw(rng, loc, scale, low, high, size)
 
     @classmethod
-    def sample_arrays(cls, rng, loc, scale):
+    def _draw(cls, rng, loc, scale, low, high, size=None):
+        if low == -np.inf and high == np.inf:
+            return rng.laplace(loc, scale, size=size)
+        lo_cdf = 0.0 if low == -np.inf else cls._cdf(low, loc, scale)
+        hi_cdf = 1.0 if high == np.inf else cls._cdf(high, loc, scale)
+        u = rng.uniform(lo_cdf, hi_cdf, size=size)
+        return cls._ppf(u, loc, scale)
+
+    @classmethod
+    def sample_arrays(cls, rng, loc, scale, low, high):
         loc = np.asarray(loc, dtype=float)
         scale = np.asarray(scale, dtype=float)
-        valid = np.isfinite(loc) & (scale > 0)
-        if np.all(valid):
-            return rng.laplace(loc, scale)
-        result = rng.laplace(np.where(valid, loc, 0.0), np.where(valid, scale, 1.0))
+        low = np.asarray(low, dtype=float)
+        high = np.asarray(high, dtype=float)
+        valid = np.isfinite(loc) & (scale > 0) & (low <= high)
+        safe_loc = np.where(valid, loc, 0.0)
+        safe_scale = np.where(valid, scale, 1.0)
+        safe_low = np.where(np.isneginf(low), 0.0, low)
+        safe_high = np.where(np.isposinf(high), 0.0, high)
+        lo_cdf = np.where(np.isneginf(low), 0.0, cls._cdf(safe_low, safe_loc, safe_scale))
+        hi_cdf = np.where(np.isposinf(high), 1.0, cls._cdf(safe_high, safe_loc, safe_scale))
+        u = rng.uniform(lo_cdf, hi_cdf)
+        result = cls._ppf(u, safe_loc, safe_scale)
         return np.where(valid, result, np.nan)
 
     def quantile(self, u):
-        # sympy 1.14's LaplaceDistribution._quantile returns None, so
-        # `sympy.stats.quantile` falls back to an unsolvable integral;
-        # visualization prefers this closed form instead.
         loc = float(self.loc)
         scale = float(self.scale)
+        low = LocationScaleLatticeNode.resolve_bound(self.low, ())
+        high = LocationScaleLatticeNode.resolve_bound(self.high, ())
+        lo_cdf = 0.0 if low == -np.inf else float(self._cdf(low, loc, scale))
+        hi_cdf = 1.0 if high == np.inf else float(self._cdf(high, loc, scale))
         u = np.asarray(u, dtype=float)
-        return loc - scale * np.sign(u - 0.5) * np.log1p(-2.0 * np.abs(u - 0.5))
+        v = lo_cdf + u * (hi_cdf - lo_cdf)
+        return self._ppf(v, loc, scale)
 
 
 class BinomialNode(NoiseNode):
@@ -538,6 +616,8 @@ class NormalSumRule(ConsolidationRule):
                 and isinstance(symbol_to_node[sym], NoiseNode)
                 and isinstance(symbol_to_node[sym], GaussianNode)
                 and not symbol_to_node[sym].deps
+                and symbol_to_node[sym].low == -sp.oo
+                and symbol_to_node[sym].high == sp.oo
             ):
                 normal_terms.append((coeff, symbol_to_node[sym]))
             else:
@@ -554,7 +634,8 @@ class NormalSumRule(ConsolidationRule):
         normal_terms, other_args = self._parse(expr, symbol_to_node, eligible)
         combined_mu = sum(c * node.loc for c, node in normal_terms)
         combined_sigma = sp.sqrt(sum((c * node.scale) ** 2 for c, node in normal_terms))
-        new_node = GaussianNode.create(loc=combined_mu, scale=combined_sigma)
+        new_node = GaussianNode.create(
+            loc=combined_mu, scale=combined_sigma, low=-sp.oo, high=sp.oo)
         symbol_to_node[new_node.expr] = new_node
         for _, node in normal_terms:
             eligible.discard(node.expr)

@@ -1,172 +1,412 @@
 {
-  "version": 5,
+  "version": 7,
   "nodes": {
-    "derived_136312591044864": {
-      "kind": "derived",
+    "derived_136446567488336": {
+      "tag": "derived",
       "deps": [
         "id_0"
       ],
-      "definition": "Add(Float('420.62865110546699', precision=53), Mul(Integer(-1), Symbol('id_0')))",
+      "definition": {
+        "tag": "Add",
+        "args": [
+          {
+            "tag": "Float",
+            "value": "420.628651105467",
+            "precision": 53
+          },
+          {
+            "tag": "Mul",
+            "args": [
+              {
+                "tag": "Rational",
+                "p": -1,
+                "q": 1
+              },
+              {
+                "tag": "Symbol",
+                "name": "id_0"
+              }
+            ]
+          }
+        ]
+      },
       "constraints": []
     },
     "id_0": {
-      "kind": "normal",
+      "tag": "gaussian",
       "deps": [],
       "params": [
-        "Integer(0)",
-        "Float('5.0', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 0,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "5.0",
+          "precision": 53
+        },
+        {
+          "tag": "NegativeInfinity"
+        },
+        {
+          "tag": "Infinity"
+        }
       ]
     },
-    "derived_136312591045008": {
-      "kind": "derived",
+    "derived_136446567489488": {
+      "tag": "derived",
       "deps": [
         "id_3"
       ],
-      "definition": "Add(Float('134.72792096032401', precision=53), Mul(Integer(-1), Symbol('id_3')))",
+      "definition": {
+        "tag": "Add",
+        "args": [
+          {
+            "tag": "Float",
+            "value": "134.727920960324",
+            "precision": 53
+          },
+          {
+            "tag": "Mul",
+            "args": [
+              {
+                "tag": "Rational",
+                "p": -1,
+                "q": 1
+              },
+              {
+                "tag": "Symbol",
+                "name": "id_3"
+              }
+            ]
+          }
+        ]
+      },
       "constraints": []
     },
     "id_3": {
-      "kind": "normal",
+      "tag": "gaussian",
       "deps": [],
       "params": [
-        "Integer(0)",
-        "Float('5.0', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 0,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "5.0",
+          "precision": 53
+        },
+        {
+          "tag": "NegativeInfinity"
+        },
+        {
+          "tag": "Infinity"
+        }
       ]
     },
-    "derived_136312591045152": {
-      "kind": "derived",
+    "derived_136446567495200": {
+      "tag": "derived",
       "deps": [
         "id_6"
       ],
-      "definition": "Add(Float('217.94526690896799', precision=53), Mul(Integer(-1), Symbol('id_6')))",
+      "definition": {
+        "tag": "Add",
+        "args": [
+          {
+            "tag": "Float",
+            "value": "217.945266908968",
+            "precision": 53
+          },
+          {
+            "tag": "Mul",
+            "args": [
+              {
+                "tag": "Rational",
+                "p": -1,
+                "q": 1
+              },
+              {
+                "tag": "Symbol",
+                "name": "id_6"
+              }
+            ]
+          }
+        ]
+      },
       "constraints": []
     },
     "id_6": {
-      "kind": "normal",
+      "tag": "gaussian",
       "deps": [],
       "params": [
-        "Integer(0)",
-        "Float('5.0', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 0,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "5.0",
+          "precision": 53
+        },
+        {
+          "tag": "NegativeInfinity"
+        },
+        {
+          "tag": "Infinity"
+        }
       ]
     },
-    "derived_136312599640016": {
-      "kind": "derived",
+    "derived_136446567495248": {
+      "tag": "derived",
       "deps": [
         "id_9"
       ],
-      "definition": "Add(Float('68.204595606925906', precision=53), Mul(Integer(-1), Symbol('id_9')))",
+      "definition": {
+        "tag": "Add",
+        "args": [
+          {
+            "tag": "Float",
+            "value": "68.2045956069259",
+            "precision": 53
+          },
+          {
+            "tag": "Mul",
+            "args": [
+              {
+                "tag": "Rational",
+                "p": -1,
+                "q": 1
+              },
+              {
+                "tag": "Symbol",
+                "name": "id_9"
+              }
+            ]
+          }
+        ]
+      },
       "constraints": []
     },
     "id_9": {
-      "kind": "normal",
+      "tag": "gaussian",
       "deps": [],
       "params": [
-        "Integer(0)",
-        "Float('5.0', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 0,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "5.0",
+          "precision": 53
+        },
+        {
+          "tag": "NegativeInfinity"
+        },
+        {
+          "tag": "Infinity"
+        }
       ]
     },
-    "derived_136312593329152": {
-      "kind": "derived",
+    "derived_136446567494768": {
+      "tag": "derived",
       "deps": [
         "id_12"
       ],
-      "definition": "Add(Float('67.741044236941505', precision=53), Mul(Integer(-1), Symbol('id_12')))",
+      "definition": {
+        "tag": "Add",
+        "args": [
+          {
+            "tag": "Float",
+            "value": "67.7410442369415",
+            "precision": 53
+          },
+          {
+            "tag": "Mul",
+            "args": [
+              {
+                "tag": "Rational",
+                "p": -1,
+                "q": 1
+              },
+              {
+                "tag": "Symbol",
+                "name": "id_12"
+              }
+            ]
+          }
+        ]
+      },
       "constraints": []
     },
     "id_12": {
-      "kind": "normal",
+      "tag": "gaussian",
       "deps": [],
       "params": [
-        "Integer(0)",
-        "Float('5.0', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 0,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "5.0",
+          "precision": 53
+        },
+        {
+          "tag": "NegativeInfinity"
+        },
+        {
+          "tag": "Infinity"
+        }
       ]
     },
-    "derived_136312599414544": {
-      "kind": "derived",
+    "derived_136446567494480": {
+      "tag": "derived",
       "deps": [
         "id_17"
       ],
-      "definition": "Symbol('id_17')",
+      "definition": {
+        "tag": "Symbol",
+        "name": "id_17"
+      },
       "constraints": []
     },
     "id_17": {
-      "kind": "binomial",
+      "tag": "binomial",
       "deps": [],
       "params": [
-        "Integer(1000)",
-        "Float('0.40000000000000002', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 1000,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "0.4",
+          "precision": 53
+        }
       ]
     },
-    "derived_136312597207024": {
-      "kind": "derived",
+    "derived_136446567495152": {
+      "tag": "derived",
       "deps": [
         "id_20"
       ],
-      "definition": "Symbol('id_20')",
+      "definition": {
+        "tag": "Symbol",
+        "name": "id_20"
+      },
       "constraints": []
     },
     "id_20": {
-      "kind": "binomial",
+      "tag": "binomial",
       "deps": [],
       "params": [
-        "Integer(1000)",
-        "Float('0.45000000000000001', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 1000,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "0.45",
+          "precision": 53
+        }
       ]
     },
-    "derived_136312603642768": {
-      "kind": "derived",
+    "derived_136446567495632": {
+      "tag": "derived",
       "deps": [
         "id_23"
       ],
-      "definition": "Symbol('id_23')",
+      "definition": {
+        "tag": "Symbol",
+        "name": "id_23"
+      },
       "constraints": []
     },
     "id_23": {
-      "kind": "binomial",
+      "tag": "binomial",
       "deps": [],
       "params": [
-        "Integer(1000)",
-        "Float('0.5', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 1000,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "0.5",
+          "precision": 53
+        }
       ]
     },
-    "derived_136312596790832": {
-      "kind": "derived",
+    "derived_136446567495776": {
+      "tag": "derived",
       "deps": [
         "id_26"
       ],
-      "definition": "Symbol('id_26')",
+      "definition": {
+        "tag": "Symbol",
+        "name": "id_26"
+      },
       "constraints": []
     },
     "id_26": {
-      "kind": "binomial",
+      "tag": "binomial",
       "deps": [],
       "params": [
-        "Integer(1000)",
-        "Float('0.55000000000000004', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 1000,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "0.55",
+          "precision": 53
+        }
       ]
     },
-    "derived_136312590756384": {
-      "kind": "derived",
+    "derived_136446567495920": {
+      "tag": "derived",
       "deps": [
         "id_29"
       ],
-      "definition": "Symbol('id_29')",
+      "definition": {
+        "tag": "Symbol",
+        "name": "id_29"
+      },
       "constraints": []
     },
     "id_29": {
-      "kind": "binomial",
+      "tag": "binomial",
       "deps": [],
       "params": [
-        "Integer(1000)",
-        "Float('0.60000000000000009', precision=53)"
+        {
+          "tag": "Rational",
+          "p": 1000,
+          "q": 1
+        },
+        {
+          "tag": "Float",
+          "value": "0.6000000000000001",
+          "precision": 53
+        }
       ]
     }
   },
   "container": {
-    "kind": "dataframe",
+    "tag": "dataframe",
     "columns": {
       "county": {
-        "kind": "plain_column",
+        "tag": "plain_series",
         "dtype": "str",
         "values": [
           "Wayne",
@@ -177,52 +417,52 @@
         ]
       },
       "black_pop": {
-        "kind": "float_column",
+        "tag": "float_series",
         "elements": [
           {
             "obs": 420.628651105467,
-            "root": "derived_136312591044864"
+            "root": "derived_136446567488336"
           },
           {
             "obs": 134.72792096032393,
-            "root": "derived_136312591045008"
+            "root": "derived_136446567489488"
           },
           {
             "obs": 217.94526690896765,
-            "root": "derived_136312591045152"
+            "root": "derived_136446567495200"
           },
           {
             "obs": 68.20459560692592,
-            "root": "derived_136312599640016"
+            "root": "derived_136446567495248"
           },
           {
             "obs": 67.74104423694155,
-            "root": "derived_136312593329152"
+            "root": "derived_136446567494768"
           }
         ]
       },
       "total_pop": {
-        "kind": "int_column",
+        "tag": "int_series",
         "elements": [
           {
             "obs": 400,
-            "root": "derived_136312599414544"
+            "root": "derived_136446567494480"
           },
           {
             "obs": 430,
-            "root": "derived_136312597207024"
+            "root": "derived_136446567495152"
           },
           {
             "obs": 460,
-            "root": "derived_136312603642768"
+            "root": "derived_136446567495632"
           },
           {
             "obs": 490,
-            "root": "derived_136312596790832"
+            "root": "derived_136446567495776"
           },
           {
             "obs": 520,
-            "root": "derived_136312590756384"
+            "root": "derived_136446567495920"
           }
         ]
       }

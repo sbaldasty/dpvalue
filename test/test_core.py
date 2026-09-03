@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import scipy.stats
 import conftest as noise
 import sympy as sp
 
@@ -299,7 +300,7 @@ def test_noisyint_binomial_invalid_parameter_raises_instead_of_corrupting_draws(
 def test_sampler_resolves_multilayer_law_dependencies():
     z1 = noise.gaussian(0, 1)
     z1_symbol = z1.expr
-    z2 = GaussianNode.create(deps=(z1,), loc=z1_symbol, scale=1)
+    z2 = GaussianNode.create(deps=(z1,), loc=z1_symbol, scale=1, low=-sp.oo, high=sp.oo)
     root = DerivedNode(
         expr=z2.expr,
         deps=(z2,),
@@ -343,7 +344,7 @@ def test_node_derived_uses_explicit_dependencies():
 def test_node_noise_uses_explicit_dependencies():
     theta = LatentNode()
 
-    z = GaussianNode.create(deps=(theta,), loc=theta.expr, scale=1)
+    z = GaussianNode.create(deps=(theta,), loc=theta.expr, scale=1, low=-sp.oo, high=sp.oo)
 
     assert {dep.expr for dep in z.deps} == {theta.expr}
 
@@ -426,6 +427,33 @@ def test_noisyfloat_gaussian_samples_from_correct_distribution():
     assert draws.std() == pytest.approx(2.0, abs=0.15)
 
 
+def test_noisyfloat_gaussian_unbounded_by_default():
+    x = NoisyFloat.gaussian(3.0, 2.0, rng=42)
+
+    assert x._root.low == -sp.oo
+    assert x._root.high == sp.oo
+
+
+def test_noisyfloat_gaussian_truncated_samples_stay_within_bounds():
+    x = NoisyFloat.gaussian(3.0, 2.0, low=2.0, high=4.0, rng=42)
+    draws = x.sample(n=2000, rng=99).draws
+
+    assert draws.min() >= 2.0
+    assert draws.max() <= 4.0
+
+
+def test_noisyfloat_gaussian_truncated_matches_scipy_truncnorm():
+    loc, scale, low, high = 3.0, 2.0, 1.0, 5.0
+    x = NoisyFloat.gaussian(loc, scale, low=low, high=high, obs=loc)
+    draws = x.sample(n=20000, rng=99).draws
+
+    a, b = (low - loc) / scale, (high - loc) / scale
+    assert draws.mean() == pytest.approx(
+        scipy.stats.truncnorm.mean(a, b, loc=loc, scale=scale), abs=0.05)
+    assert draws.std() == pytest.approx(
+        scipy.stats.truncnorm.std(a, b, loc=loc, scale=scale), abs=0.05)
+
+
 # ── NoisyFloat.laplace ─────────────────────────────────────────────────────────
 
 def test_noisyfloat_laplace_returns_noisyfloat_with_float_obs():
@@ -447,6 +475,30 @@ def test_noisyfloat_laplace_samples_from_correct_distribution():
 
     assert draws.mean() == pytest.approx(3.0, abs=0.2)
     assert draws.std() == pytest.approx(2.0 * np.sqrt(2.0), abs=0.25)
+
+
+def test_noisyfloat_laplace_unbounded_by_default():
+    x = NoisyFloat.laplace(3.0, 2.0, rng=42)
+
+    assert x._root.low == -sp.oo
+    assert x._root.high == sp.oo
+
+
+def test_noisyfloat_laplace_truncated_samples_stay_within_bounds():
+    x = NoisyFloat.laplace(3.0, 2.0, low=1.0, high=5.0, rng=42)
+    draws = x.sample(n=2000, rng=99).draws
+
+    assert draws.min() >= 1.0
+    assert draws.max() <= 5.0
+
+
+def test_noisyfloat_laplace_truncated_quantile_stays_within_bounds():
+    x = NoisyFloat.laplace(3.0, 2.0, low=1.0, high=5.0, obs=3.0)
+    q = x._root.quantile(np.array([0.0, 0.1, 0.5, 0.9, 1.0]))
+
+    assert np.all(q >= 1.0) and np.all(q <= 5.0)
+    assert q[0] == pytest.approx(1.0)
+    assert q[-1] == pytest.approx(5.0)
 
 
 def test_noisyfloat_gaussian_noisy_loc_obs_uses_observed_value_of_loc():
@@ -755,3 +807,14 @@ def test_consolidate_combined_sigma_scales_with_coefficients():
     expected_std = float(np.sqrt(13))
     actual_std = np.std(z_cons.sample(n=10000, rng=42).draws)
     assert abs(actual_std - expected_std) < 0.1
+
+
+def test_consolidate_does_not_combine_bounded_gaussian_nodes():
+    # Merging two truncated normals into one Gaussian would silently
+    # discard both bounds and give the wrong posterior, so the rule must
+    # leave them alone.
+    x = NoisyFloat.gaussian(1.0, 1.0, low=0.0, high=5.0)
+    y = NoisyFloat.gaussian(2.0, 1.0, low=0.0, high=5.0)
+    z = x + y
+    (z_cons,) = consolidate(z)
+    assert _noise_node_count(z_cons) == 2

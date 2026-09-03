@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 import pytest
+import scipy.stats
 
 dp = pytest.importorskip("opendp.prelude")
 dp.enable_features("contrib", "honest-but-curious")
@@ -28,10 +29,37 @@ def test_weighted_sum_release_matches_calibrated_scale():
     value = ds.release(terms, rho=0.1)
 
     assert isinstance(value, NoisyFloat)
-    expected_scale = 200.0 / math.sqrt(2 * 0.1)  # sensitivity = hi_w * hi_x
+    # The posterior is the calibrated Gaussian noise truncated to the sum of
+    # each term's own declared [lo, hi] (each w*x term lies in [0, 200]),
+    # which is a real public bound on the statistic's true value -- so the
+    # released draws match the *truncated* normal, not the raw noise scale.
+    noise_scale = 200.0 / math.sqrt(2 * 0.1)  # sensitivity = hi_w * hi_x
+    total_lo = sum(t.lo for t in terms)
+    total_hi = sum(t.hi for t in terms)
+    loc = float(value)
+    a, b = (total_lo - loc) / noise_scale, (total_hi - loc) / noise_scale
+    expected_mean = scipy.stats.truncnorm.mean(a, b, loc=loc, scale=noise_scale)
+    expected_std = scipy.stats.truncnorm.std(a, b, loc=loc, scale=noise_scale)
     draws = value.sample(n=20000, rng=np.random.default_rng(1)).draws
-    assert abs(draws.std() - expected_scale) < 0.05 * expected_scale
-    assert abs(draws.mean() - float(value)) < 0.05 * expected_scale
+    assert abs(draws.std() - expected_std) < 0.05 * noise_scale
+    assert abs(draws.mean() - expected_mean) < 0.05 * noise_scale
+
+
+def test_release_posterior_is_truncated_to_declared_bounds():
+    rng = np.random.default_rng(0)
+    units, terms = make_units(20, rng)
+    ds = PrivateDataset(units)
+
+    value = ds.release(terms, rho=0.1)
+
+    total_lo = sum(t.lo for t in terms)
+    total_hi = sum(t.hi for t in terms)
+    draws = value.sample(n=20000, rng=np.random.default_rng(2)).draws
+    # Without truncation this posterior (an unclamped Gaussian several
+    # scales wide) would regularly sample outside [0, 4000]; asserting the
+    # bound here is exactly the behavior this test is guarding.
+    assert draws.min() >= total_lo
+    assert draws.max() <= total_hi
 
 
 def test_bool_count_release_is_discrete_with_sensitivity_one():

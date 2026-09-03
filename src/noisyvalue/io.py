@@ -19,7 +19,7 @@ from .graph import GaussianCensoredNode, LaplaceCensoredNode
 from .pandas import NoisyBoolArray, NoisyFloatArray, NoisyIntArray
 
 
-VERSION = 6
+VERSION = 7
 
 
 class Serializer:

@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import pandas as pd
+import sympy as sp
 
 from noisyvalue.core import NoisyFloat, NoisyInt
 from noisyvalue.graph import GaussianNode
@@ -22,7 +23,7 @@ counties = ["Wayne", "Oakland", "Macomb", "Lapeer", "Livingston"]
 true_counts = [420.0, 133.0, 217.0, 58.0, 71.0]
 
 black_pop = [
-    NoisyFloat.draw(v, GaussianNode.create(loc=0, scale=5.0), rng=i)
+    NoisyFloat.draw(v, GaussianNode.create(loc=0, scale=5.0, low=-sp.oo, high=sp.oo), rng=i)
     for i, v in enumerate(true_counts)
 ]
 total_pop = [

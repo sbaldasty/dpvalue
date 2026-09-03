@@ -408,25 +408,29 @@ class NoisyFloat(NoisyNumber):
         return self.unary_op(NoisyFloat, np.sqrt, sp.sqrt)
 
     @classmethod
-    def gaussian(cls, loc, scale, obs=None, rng=None):
+    def gaussian(cls, loc, scale, low=-sp.oo, high=sp.oo, obs=None, rng=None):
         loc = NoisyFloat.lift(loc)
         scale = NoisyFloat.lift(scale)
         deps = [v._root for v in (loc, scale) if v.expr.free_symbols]
-        node = GaussianNode.create(deps=deps, loc=loc.expr, scale=scale.expr)
+        node = GaussianNode.create(
+            deps=deps, loc=loc.expr, scale=scale.expr, low=low, high=high)
         if obs is None:
             rng = util.generator(rng)
-            obs = rng.normal(float(loc), float(scale))
+            obs = GaussianNode._draw(
+                rng, float(loc), float(scale), float(low), float(high))
         return cls(obs, node)
 
     @classmethod
-    def laplace(cls, loc, scale, obs=None, rng=None):
+    def laplace(cls, loc, scale, low=-sp.oo, high=sp.oo, obs=None, rng=None):
         loc = NoisyFloat.lift(loc)
         scale = NoisyFloat.lift(scale)
         deps = [v._root for v in (loc, scale) if v.expr.free_symbols]
-        node = LaplaceNode.create(deps=deps, loc=loc.expr, scale=scale.expr)
+        node = LaplaceNode.create(
+            deps=deps, loc=loc.expr, scale=scale.expr, low=low, high=high)
         if obs is None:
             rng = util.generator(rng)
-            obs = rng.laplace(float(loc), float(scale))
+            obs = LaplaceNode._draw(
+                rng, float(loc), float(scale), float(low), float(high))
         return cls(obs, node)
 
 

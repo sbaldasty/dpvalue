@@ -317,6 +317,14 @@ class PrivateDataset:
         sensitivity is the worst-case magnitude any single unit's terms
         can sum to; several terms from the same unit are added together
         for that purpose.
+
+        Each term's `lo`/`hi` are also public bounds on that unit's own true
+        contribution (see `PrivacyUnit`), so `sum(t.lo)`/`sum(t.hi)` across
+        *all* terms bound the statistic's true value -- unlike sensitivity,
+        which is driven by one worst-case unit. That sum truncates the
+        released posterior the same way a known-nonnegative count already
+        does elsewhere in this library, tightening it whenever the bound
+        falls inside the noise's informative range.
         """
         terms = list(terms)
         if not terms:
@@ -326,6 +334,7 @@ class PrivateDataset:
 
         per_unit = {}
         discrete = True
+        total_lo = total_hi = 0.0
         for t in terms:
             if not isinstance(t, PrivateNumber):
                 raise TypeError(
@@ -343,6 +352,8 @@ class PrivateDataset:
             discrete = discrete and isinstance(t, PrivateInt)
             lo, hi = per_unit.get(unit, (0.0, 0.0))
             per_unit[unit] = (lo + t.lo, hi + t.hi)
+            total_lo += t.lo
+            total_hi += t.hi
 
         sensitivity = max(max(abs(lo), abs(hi)) for lo, hi in per_unit.values())
         if sensitivity <= 0.0:
@@ -363,7 +374,8 @@ class PrivateDataset:
         scale = dp.binary_search_param(
             lambda s: dp.m.make_gaussian(domain, metric, scale=s),
             d_in=d_in, d_out=rho, T=float)
-        meas = make_gaussian(domain, metric, scale, key=key, registry=self._registry)
+        meas = make_gaussian(domain, metric, scale, key=key, registry=self._registry,
+                             low=total_lo, high=total_hi)
         value = meas(nominal)
 
         self.rho_spent += rho
